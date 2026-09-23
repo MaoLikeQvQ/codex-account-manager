@@ -17,6 +17,7 @@
   }
   check.addEventListener('click', () => refresh(true));
   install.addEventListener('click', async () => {
+    if (!await confirmAction('下载校验完成后，管理器会自动退出并安装新版，请先保存当前编辑内容。', '安装更新并重启', '更新并重启')) return;
     install.disabled = check.disabled = true;
     status.textContent = '正在下载并校验安装包，请稍候…';
     try {

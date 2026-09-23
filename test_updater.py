@@ -31,7 +31,7 @@ class UpdateTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as folder:
                 target = Path(folder) / 'download'
                 target.mkdir()
-                with patch.object(updater, 'check_update', return_value=self.manifest()), patch.object(updater.tempfile, 'mkdtemp', return_value=str(target)), patch.object(updater, 'urlopen', return_value=io.BytesIO(content)), patch.object(updater.subprocess, 'run') as opened:
+                with patch.object(updater, 'INSTALL_PENDING', False), patch.object(updater, 'check_update', return_value=self.manifest()), patch.object(updater.tempfile, 'mkdtemp', return_value=str(target)), patch.object(updater, 'urlopen', return_value=io.BytesIO(content)), patch.object(updater, 'installed_bundle', return_value=Path('/Applications/Test.app')), patch.object(updater, 'prepare_install') as opened, patch.object(updater.threading, 'Timer'):
                     if valid:
                         updater.download_update()
                         opened.assert_called_once()

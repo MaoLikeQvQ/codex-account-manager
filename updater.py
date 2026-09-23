@@ -1,4 +1,5 @@
 """Public GitHub release discovery and verified installer download."""
+import os
 import hashlib
 import json
 import platform
@@ -9,10 +10,12 @@ import threading
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from update_install import installed_bundle, prepare_install
 from app_version import APP_VERSION, UPDATE_REPOSITORY
 
 BASE = f'https://github.com/{UPDATE_REPOSITORY}/releases'
 LOCK = threading.Lock()
+INSTALL_PENDING = False
 MAX_SIZE = 512 * 1024 * 1024
 
 
@@ -51,9 +54,13 @@ def check_update():
 
 
 def download_update():
+    global INSTALL_PENDING
     if not LOCK.acquire(blocking=False):
         raise ValueError('正在下载更新，请稍候')
     try:
+        if INSTALL_PENDING:
+            raise ValueError('更新已准备好，正在重启')
+        current = installed_bundle()
         data = check_update()
         if not data['available']:
             raise ValueError('当前没有适用的新版本')
@@ -71,11 +78,17 @@ def download_update():
                     output.write(chunk)
             if size != data['size'] or digest.hexdigest() != data['sha256']:
                 raise ValueError('安装包校验失败，请重新下载')
-            subprocess.run(['open', str(target)], check=True)
+            prepare_install(target, data['version'], current)
+            INSTALL_PENDING = True
         except Exception:
             target.unlink(missing_ok=True)
             folder.rmdir()
             raise
-        return {'version': data['version'], 'message': '安装包已打开，请退出管理器，将新版拖入 Applications 覆盖安装。'}
+        target.unlink(missing_ok=True)
+        folder.rmdir()
+        timer = threading.Timer(2, lambda: os._exit(0))
+        timer.daemon = True
+        timer.start()
+        return {'version': data['version'], 'message': '更新已准备好，应用即将自动退出、安装并重新打开。'}
     finally:
         LOCK.release()
