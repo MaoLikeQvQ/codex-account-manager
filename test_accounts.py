@@ -343,7 +343,7 @@ class AccountManagerTests(AccountManagerTestBase):
             self.manager, "_read_app_server_response", return_value=login_response
         ), patch.object(self.manager, "_open_official_auth_url") as open_url, patch.object(
             threading.Thread, "start"
-        ):
+        ), patch.object(self.manager, "_codex_binary", return_value="/mock/codex"):
             result = self.manager.start_official_login()
 
         self.assertEqual(result["status"], "pending")
@@ -354,10 +354,13 @@ class AccountManagerTests(AccountManagerTestBase):
         self.manager._official_login_sessions.clear()
 
     def test_official_catalog_command_does_not_inherit_packaged_openssl_modules(self):
+        binary = self.paths.codex_home / "mock-codex"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text("mock binary")
         completed = type("Completed", (), {"stdout": '{"models": []}'})()
         with patch.dict("codex_manager.os.environ", {"OPENSSL_MODULES": "/stale/modules"}), patch(
             "codex_manager.subprocess.run", return_value=completed
-        ) as run:
+        ) as run, patch("codex_manager.shutil.which", return_value=str(binary)):
             self.manager._bundled_catalog()
 
         self.assertNotIn("OPENSSL_MODULES", run.call_args.kwargs["env"])
