@@ -1,0 +1,14 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+build/
+dist/
+output/
+.playwright-cli/
+.env
+.env.*
+auth.json
+config.toml
+codex_accounts.json
+*.log
