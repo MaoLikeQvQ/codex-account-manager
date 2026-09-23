@@ -125,7 +125,7 @@ python3 -m unittest -v
 产物：
 
 - `dist/MaoLocal Codex 管理器.app`
-- `dist/MaoLocal Codex 管理器-<版本>-arm64.dmg`，打开后拖入 Applications 安装
+- `dist/MaoLocal-Codex-Manager-<版本>-arm64.dmg`，打开后拖入 Applications 安装
 
 以后应从这个管理器进入 Codex，使用“启动 Codex”。直接点击原 Codex 图标不会执行新增内置模型合并、渠道模型同步或补丁校验。
 

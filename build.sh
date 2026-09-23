@@ -7,7 +7,7 @@ APP_NAME="MaoLocal Codex 管理器"
 PROJECT_DIR="$PWD"
 APP_VERSION="$(sed -n 's/^APP_VERSION = "\([^"]*\)"/\1/p' app_version.py | head -n 1)"
 APP_BUNDLE="dist/$APP_NAME.app"
-DMG_NAME="$APP_NAME-$APP_VERSION-arm64.dmg"
+DMG_NAME="MaoLocal-Codex-Manager-$APP_VERSION-arm64.dmg"
 PYINSTALLER_BIN="${PYINSTALLER_BIN:-$(command -v pyinstaller || true)}"
 
 if [ -z "$PYINSTALLER_BIN" ] && [ -x /opt/miniconda3/bin/pyinstaller ]; then

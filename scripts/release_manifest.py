@@ -8,7 +8,7 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app_version import APP_VERSION, UPDATE_REPOSITORY
 
-artifact = Path('dist') / f'MaoLocal Codex 管理器-{APP_VERSION}-arm64.dmg'
+artifact = Path('dist') / f'MaoLocal-Codex-Manager-{APP_VERSION}-arm64.dmg'
 manifest = {
     'version': APP_VERSION,
     'architecture': 'arm64',
