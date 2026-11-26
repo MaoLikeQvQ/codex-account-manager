@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .common import *
 from .common import _now
+from .config_import import connection_url, validate_provider_config
 
 
 class AccountsMixin:
@@ -9,7 +10,7 @@ class AccountsMixin:
     def _normalize_account_fields(payload: dict[str, Any]) -> dict[str, str]:
         name = str(payload.get("name", "")).strip()
         original_name = str(payload.get("original_name", "")).strip()
-        provider_id = str(payload.get("provider_id", "")).strip()
+        provider_id = CUSTOM_PROVIDER_ID
         base_url = str(payload.get("base_url", "")).strip().rstrip("/")
         wire_api = str(payload.get("wire_api", "responses")).strip()
         default_model = str(payload.get("default_model", "")).strip()
@@ -21,13 +22,7 @@ class AccountsMixin:
 
         if not name:
             raise ValueError("账号名称不能为空")
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", provider_id):
-            raise ValueError("Provider ID 只能包含字母、数字、下划线和短横线")
-        parsed_url = urlparse(base_url)
-        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
-            raise ValueError("Base URL 必须是有效的 http 或 https 地址")
-        if parsed_url.username or parsed_url.password or parsed_url.query or parsed_url.fragment:
-            raise ValueError("Base URL 不能包含账号密码、查询参数或片段")
+        base_url = connection_url(base_url, "Base URL")
         if wire_api != "responses":
             raise ValueError("当前只支持 Codex Responses 协议")
         if reasoning_effort not in {"low", "medium", "high", "xhigh", "max", "ultra"}:
@@ -57,7 +52,6 @@ class AccountsMixin:
     @staticmethod
     def _provider_config_for_fields(
         fields: dict[str, str],
-        provider_name: str,
         existing: dict[str, Any] | None = None,
         *,
         was_sub2api: bool = False,
@@ -65,17 +59,17 @@ class AccountsMixin:
         provider = dict(existing or {})
         provider.update(
             {
-                "name": provider_name or fields["name"],
+                "name": CUSTOM_PROVIDER_ID,
                 "base_url": fields["base_url"],
                 "wire_api": fields["wire_api"],
-                "requires_openai_auth": (
-                    fields["connection_type"] != "sub2api"
-                    or fields["auth_mode"] == "legacy"
-                ),
             }
         )
         provider.pop("experimental_bearer_token", None)
         provider.pop("supports_websockets", None)
+        if fields["connection_type"] == "sub2api":
+            provider["requires_openai_auth"] = fields["auth_mode"] == "legacy"
+        else:
+            provider.setdefault("requires_openai_auth", True)
         if fields["connection_type"] != "sub2api":
             if was_sub2api:
                 headers = provider.get("http_headers", {})
@@ -100,6 +94,28 @@ class AccountsMixin:
             provider.pop("http_headers", None)
         return provider
 
+    def _account_connection(self, payload, fields, existing):
+        # A pasted configuration replaces the connection, a normal edit preserves hidden fields.
+        source = (validate_provider_config(payload["provider_config"])
+                  if "provider_config" in payload else dict(existing.get("provider_config", {})))
+        if "model_catalog_url" in payload:
+            catalog = payload["model_catalog_url"]
+            if catalog:
+                source["model_catalog_url"] = connection_url(catalog, "模型目录地址")
+            else:
+                source.pop("model_catalog_url", None)
+        if "requires_openai_auth" in payload:
+            if not isinstance(payload["requires_openai_auth"], bool):
+                raise ValueError("鉴权设置必须为 true 或 false")
+            source["requires_openai_auth"] = payload["requires_openai_auth"]
+        discovery = payload.get("api_key_model_discovery", existing.get("api_key_model_discovery", bool(source.get("model_catalog_url"))))
+        if not isinstance(discovery, bool):
+            raise ValueError("自动发现模型必须为 true 或 false")
+        return self._provider_config_for_fields(
+            fields, source,
+            was_sub2api=self._connection_type(existing) == "sub2api",
+        ), discovery
+
     def save_account(self, payload: dict[str, Any]) -> dict[str, Any]:
         fields = self._normalize_account_fields(payload)
         name = fields["name"]
@@ -114,7 +130,14 @@ class AccountsMixin:
 
         store = self._load_store()
         accounts = store["accounts"]
-        existing = accounts.get(original_name or name, {})
+        if not original_name and name in accounts:
+            raise ValueError(f"账号已存在：{name}，请编辑现有账号或更换名称")
+        if original_name and original_name not in accounts:
+            raise ValueError("原账号不存在，请刷新后重试")
+        existing = accounts.get(original_name, {})
+        if existing and self._account_type(existing) == "official":
+            raise ValueError("官方账号请使用官方授权入口")
+        provider_config, discovery = self._account_connection(payload, fields, existing)
         if not api_key:
             api_key = str(existing.get("api_key", ""))
         if not api_key:
@@ -125,13 +148,10 @@ class AccountsMixin:
             del accounts[original_name]
             if store.get("active_account") == original_name:
                 store["active_account"] = name
+                pending = store.get("pending_history_claim")
+                if isinstance(pending, dict) and pending.get("account") == original_name:
+                    pending["account"] = name
 
-        provider_config = self._provider_config_for_fields(
-            fields,
-            str(payload.get("provider_name", "")).strip() or name,
-            existing.get("provider_config", {}),
-            was_sub2api=self._connection_type(existing) == "sub2api",
-        )
         created_at = str(existing.get("created_at", "")) or _now()
         accounts[name] = {
             "account_type": "custom",
@@ -141,46 +161,55 @@ class AccountsMixin:
             "provider_id": provider_id,
             "provider_config": provider_config,
             "api_key": api_key,
-            "model_ids": self._normalized_model_ids(existing.get("model_ids", [])),
-            "catalog_model_ids": self._normalized_model_ids(
-                existing.get("catalog_model_ids", existing.get("model_ids", []))
-            ),
             "default_model": default_model,
             "reasoning_effort": reasoning_effort,
+            "api_key_model_discovery": discovery,
             "created_at": created_at,
             "updated_at": _now(),
         }
+        if store.get("active_account") == name:
+            accounts[name]["applied_account"] = copy.deepcopy(existing.get("applied_account", existing))
+            accounts[name]["pending_apply"] = True
         self._save_store(store)
         return self._public_account(name, accounts[name], store.get("active_account") == name)
 
-    def verify_account(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """只校验当前填写信息能否访问渠道，不落库、不切换账号。"""
+    def _verification_account(self, payload: dict[str, Any]):
         fields = self._normalize_account_fields(payload)
-        name = fields["name"]
         original_name = fields["original_name"]
         api_key = fields["api_key"]
-        if not api_key and original_name:
+        existing = {}
+        if original_name:
             store = self._load_store()
             existing = store["accounts"].get(original_name, {})
-            api_key = str(existing.get("api_key", "")).strip() if isinstance(existing, dict) else ""
+            if not api_key:
+                api_key = str(existing.get("api_key", "")).strip() if isinstance(existing, dict) else ""
         if not api_key:
             raise ValueError("API Key 不能为空")
 
-        provider_config = self._provider_config_for_fields(
-            fields,
-            str(payload.get("provider_name", "")).strip() or name,
-        )
+        provider_config, _discovery = self._account_connection(payload, fields, existing)
         account = {
             "provider_id": fields["provider_id"],
             "provider_config": provider_config,
             "api_key": api_key,
         }
-        model_ids = self._fetch_model_ids(account)
+        return fields, account
+
+    def verify_connection(self, payload: dict[str, Any]) -> dict[str, Any]:
+        fields, account = self._verification_account(payload)
+        if not fields["default_model"]:
+            raise ValueError("请先填写用于验证连接的模型")
+        return self._test_model_response(account, fields["default_model"])
+
+    def verify_account(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """读取模型列表，不保存或切换账号。"""
+        fields, account = self._verification_account(payload)
+        discovered = self._discover_models(account)
+        model_ids = discovered["model_ids"]
         return {
-            "account": name,
+            "account": fields["name"],
             "models": len(model_ids),
             "model_ids": model_ids,
-            "endpoint": self._models_endpoint(account),
+            "endpoint": discovered["endpoint"],
             "connection_type": fields["connection_type"],
             "auth_mode": fields["auth_mode"],
             "transport": fields["transport"],
@@ -194,6 +223,7 @@ class AccountsMixin:
         if store.get("active_account") == name:
             store["active_account"] = ""
             store["unmanaged_current_account"] = True
+            store.pop("pending_history_claim", None)
         del store["accounts"][name]
         self._save_store(store)
 
@@ -204,99 +234,61 @@ class AccountsMixin:
         if not isinstance(account, dict):
             raise KeyError(f"账号不存在：{name}")
 
+        store["pending_history_claim"] = {"account": name, "status": "pending"}
         if self._account_type(account) == "official":
-            return self._activate_official_account(store, name, account)
-
-        selected_model_ids = self._normalized_model_ids(account.get("model_ids", []))
-        local_model_ids = self._normalized_model_ids(
-            account.get("catalog_model_ids", selected_model_ids)
-        )
-        model_ids = self._merge_official_model_ids(local_model_ids)
-        selected_model_ids = self._merge_official_model_ids(selected_model_ids)
-        models_source = "account_cache"
-        if not local_model_ids:
-            existing_catalog = self._read_catalog_models()
-            local_model_ids = self._normalized_model_ids(
-                [item.get("slug") for item in existing_catalog]
+            result = self._activate_official_account(
+                store, name, account,
             )
-            model_ids = self._merge_official_model_ids(local_model_ids)
-            selected_model_ids = self._merge_official_model_ids(
-                [
-                    item.get("slug")
-                    for item in existing_catalog
-                    if item.get("visibility", "list") != "hide"
-                ]
-            )
-            models_source = "existing_catalog"
-        if not model_ids:
-            default_model = str(account.get("default_model", "")).strip()
-            if not default_model:
-                raise ValueError("账号没有可用模型，请先验证账号并选择默认模型")
-            model_ids = [default_model]
-            selected_model_ids = model_ids
-            models_source = "default_model"
-        selected_model_ids = self._merge_official_model_ids(selected_model_ids)
-        if not account.get("catalog_model_ids"):
-            account["model_ids"] = model_ids
-            account["catalog_model_ids"] = model_ids
-        selected_model_ids = [slug for slug in selected_model_ids if slug in model_ids]
-        if not selected_model_ids:
-            selected_model_ids = model_ids
-            account["model_ids"] = selected_model_ids
-        catalog = self._build_catalog(model_ids, selected_model_ids)
-        selected_model = str(account.get("default_model", "")).strip()
-        if selected_model not in selected_model_ids:
-            selected_model = selected_model_ids[0]
-            account["default_model"] = selected_model
+            result["history"] = self._apply_pending_history_claim()
+            return result
 
         config_text = self._read_text(self.paths.config)
-        provider_id = str(account["provider_id"])
+        selected_model = str(tomllib.loads(config_text).get("model", "")).strip()
+        provider_id = CUSTOM_PROVIDER_ID
+        account["provider_id"] = provider_id
+        account["provider_config"]["name"] = CUSTOM_PROVIDER_ID
         updates = {
-            "model": selected_model,
             "model_provider": provider_id,
-            "model_catalog_json": str(self.paths.catalog),
             "model_reasoning_effort": str(account.get("reasoning_effort", "high")),
+            "cli_auth_credentials_store": "file",
         }
         new_config = self._rewrite_top_level(config_text, updates)
+        new_config = self._without_managed_catalog(new_config)
+        discovery = account.get("api_key_model_discovery", bool(account["provider_config"].get("model_catalog_url")))
+        applied_provider = dict(account["provider_config"])
+        # An explicit URL with discovery disabled makes Codex return an empty catalog.
+        if not discovery:
+            applied_provider.pop("model_catalog_url", None)
         new_config = self._replace_provider_block(
             new_config,
             provider_id,
-            self._render_provider_block(provider_id, account["provider_config"]),
+            self._render_provider_block(provider_id, applied_provider),
         )
-        if self._connection_type(account) == "sub2api" and account.get("transport") == "websocket":
-            new_config = self._upsert_section_value(
-                new_config,
-                "features",
-                "responses_websockets_v2",
-                True,
-            )
+        new_config = self._apply_account_features(new_config, store, {
+            "api_key_model_discovery": discovery,
+            "responses_websockets_v2": self._connection_type(account) == "sub2api" and account.get("transport") == "websocket",
+        })
+        tomllib.loads(new_config)
         auth_text = json.dumps({"OPENAI_API_KEY": account["api_key"]}, ensure_ascii=False, indent=2)
 
         store["active_account"] = name
         store.pop("unmanaged_current_account", None)
+        account.pop("pending_apply", None)
+        account.pop("applied_account", None)
+        self._mark_restart_required(store)
         account["updated_at"] = _now()
-        endpoint = self._models_endpoint(account)
-        self._backup_many(self.paths.config, self.paths.auth, self.paths.catalog)
+        self._backup_many(self.paths.config, self.paths.auth)
         self._commit_account_switch(
             store,
             [
                 (self.paths.config, new_config),
                 (self.paths.auth, auth_text + "\n"),
-                (
-                    self.paths.catalog,
-                    json.dumps(catalog, ensure_ascii=False, indent=2) + "\n",
-                ),
-                (
-                    self.paths.sync_state,
-                    self._sync_state_text("ok", name, len(model_ids), endpoint, ""),
-                ),
             ],
         )
         return {
             "account": name,
             "model": selected_model,
-            "models": len(model_ids),
-            "models_source": models_source,
+            "history": self._apply_pending_history_claim(),
         }
 
     def _load_store(self) -> dict[str, Any]:
@@ -357,43 +349,29 @@ class AccountsMixin:
             return False
 
         current_url = str(provider.get("base_url", "")).rstrip("/")
+        current_key = self._auth_api_key(self._read_text(self.paths.auth))
         accounts = store["accounts"]
-        for name, account in accounts.items():
-            if not isinstance(account, dict):
+        active_name = store.get("active_account", "")
+        names = ([active_name] if active_name in accounts else []) + [name for name in accounts if name != active_name]
+        for name in names:
+            account = accounts[name]
+            if not isinstance(account, dict) or self._account_type(account) != "custom":
                 continue
-            saved_provider = account.get("provider_config", {})
-            saved_url = (
-                str(saved_provider.get("base_url", "")).rstrip("/")
-                if isinstance(saved_provider, dict)
-                else ""
-            )
-            if str(account.get("provider_id", "")) == provider_id and saved_url == current_url:
-                if store.get("active_account") != name:
+            applied = account.get("applied_account", account)
+            saved_provider = applied.get("provider_config", {})
+            saved_url = str(saved_provider.get("base_url", "")).rstrip("/")
+            if (str(applied.get("provider_id", "")) == provider_id
+                    and saved_url == current_url and current_key
+                    and applied.get("api_key") == current_key):
+                if active_name != name:
                     store["active_account"] = name
                     return True
                 return False
-
-        base_name = str(provider.get("name", "")) or provider_id
-        name = base_name
-        suffix = 2
-        while name in accounts:
-            name = f"{base_name} {suffix}"
-            suffix += 1
-        accounts[name] = {
-            "account_type": "custom",
-            "connection_type": "openai_compatible",
-            "auth_mode": "legacy",
-            "transport": "http_sse",
-            "provider_id": provider_id,
-            "provider_config": dict(provider),
-            "api_key": self._auth_api_key(self._read_text(self.paths.auth)),
-            "default_model": str(config.get("model", "")),
-            "reasoning_effort": str(config.get("model_reasoning_effort", "high")),
-            "created_at": _now(),
-            "updated_at": _now(),
-        }
-        store["active_account"] = name
-        return True
+        # External edits are visible as unmanaged configuration, not new accounts on every poll.
+        if active_name:
+            store["active_account"] = ""
+            return True
+        return False
 
     def _migrate_store(self, raw: dict[str, Any]) -> dict[str, Any]:
         if raw.get("version") in {6, 7} and isinstance(raw.get("accounts"), dict):
@@ -472,6 +450,7 @@ class AccountsMixin:
             "api_key": self._auth_api_key(self._read_text(self.paths.auth)),
             "default_model": str(config.get("model", "")),
             "reasoning_effort": str(config.get("model_reasoning_effort", "high")),
+            "api_key_model_discovery": bool(config.get("features", {}).get("api_key_model_discovery", bool(provider_config.get("model_catalog_url")))),
             "created_at": _now(),
             "updated_at": _now(),
         }

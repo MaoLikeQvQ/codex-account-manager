@@ -8,103 +8,54 @@ class AccountManagerTests(AccountManagerTestBase):
         self.assertNotIn("secret-key", json.dumps(state))
         self.assertTrue(state["accounts"][0]["has_api_key"])
 
-    def test_post_switch_actions_only_run_selected_operations(self):
+    def test_account_switch_replaces_legacy_catalog_reference_without_touching_old_file(self):
         self.save_account()
+        catalog = self.paths.codex_home / "models.json"
+        catalog.write_text('{"models": ["legacy"]}')
+        self.paths.config.write_text(f'model_catalog_json = "{catalog}"\n')
         self.manager.activate_account("MaoLocal")
-        with patch.object(self.manager, "sync_active", return_value={"models": 2}) as sync, patch.object(
-            self.manager, "claim_all_conversations", return_value={"changed_files": 1}
-        ) as claim, patch.object(
-            self.manager, "ensure_codex_patches", return_value={"status": "current"}
-        ) as patches, patch.object(self.manager, "codex_running", return_value=False):
-            result = self.manager.run_post_switch_actions(
-                "MaoLocal", sync_models=True, claim_history=False
-            )
-        self.assertEqual(
-            result["actions"],
-            ["sync_models", "inject_model_catalog"],
-        )
-        sync.assert_called_once_with()
-        claim.assert_not_called()
-        patches.assert_called_once_with()
+        config = tomllib.loads(self.paths.config.read_text())
+        self.assertNotIn("model_catalog_json", config)
+        self.assertEqual(catalog.read_text(), '{"models": ["legacy"]}')
 
-    def test_post_switch_sync_injects_model_catalog_without_image_generation(self):
-        self.save_account()
-        self.manager.activate_account("MaoLocal")
-        with patch.object(self.manager, "sync_active", return_value={"models": 2}), patch.object(
-            self.manager, "ensure_codex_patches", return_value={"status": "patched"}
-        ) as patches, patch.object(self.manager, "codex_running", return_value=False):
-            result = self.manager.run_post_switch_actions(
-                "MaoLocal", sync_models=True
-            )
+    def test_cleanup_clears_only_managed_catalog_reference(self):
+        for managed in (self.paths.codex_home / "models.json", self.paths.bundled_model_catalog):
+            self.paths.config.write_text(f'model = "saved"\nmodel_catalog_json = "{managed}"\n')
+            self.manager._clear_managed_catalog()
+            self.assertEqual(tomllib.loads(self.paths.config.read_text()), {"model": "saved"})
+            self.assertTrue(any(self.paths.backups.glob("config.toml.*.bak")))
 
-        self.assertEqual(result["actions"], ["sync_models", "inject_model_catalog"])
-        patches.assert_called_once_with()
+        self.paths.config.write_text('model_catalog_json = "/tmp/my-models.json"\n')
+        self.manager._clear_managed_catalog()
+        self.assertEqual(self.paths.config.read_text(), 'model_catalog_json = "/tmp/my-models.json"\n')
 
-    def test_post_switch_passes_selected_models_to_sync(self):
-        self.save_account()
-        self.manager.activate_account("MaoLocal")
-        with patch.object(self.manager, "sync_active", return_value={"models": 1}) as sync, patch.object(
-            self.manager, "ensure_codex_patches", return_value={"status": "patched"}
-        ), patch.object(self.manager, "codex_running", return_value=False):
-            self.manager.run_post_switch_actions(
-                "MaoLocal",
-                sync_models=True,
-                model_ids=["vendor-coder"],
-            )
-
-        sync.assert_called_once_with(["vendor-coder"])
-
-    def test_post_switch_stops_running_codex_before_patching(self):
-        self.save_account()
-        self.manager.activate_account("MaoLocal")
-        events = []
-
-        with patch.object(
-            self.manager, "sync_active", return_value={"models": 2}
-        ), patch.object(
-            self.manager, "codex_running", return_value=True
-        ), patch.object(
-            self.manager, "_stop_codex", side_effect=lambda: events.append("stop")
-        ), patch.object(
-            self.manager,
-            "ensure_codex_patches",
-            side_effect=lambda **_kwargs: events.append("patch") or {"status": "patched"},
-        ), patch.object(
-            self.manager,
-            "launch_codex",
-            side_effect=lambda **_kwargs: events.append("launch") or "opened",
-        ) as launch:
-            result = self.manager.run_post_switch_actions(
-                "MaoLocal", sync_models=True
-            )
-
-        self.assertEqual(events, ["stop", "patch", "launch"])
-        launch.assert_called_once_with(restart=False)
-        self.assertEqual(result["actions"][-1], "restart_codex")
-
-    def test_post_switch_reopens_codex_when_patching_fails(self):
-        self.save_account()
-        self.manager.activate_account("MaoLocal")
-
-        with patch.object(
-            self.manager, "sync_active", return_value={"models": 2}
-        ), patch.object(
-            self.manager, "codex_running", return_value=True
-        ), patch.object(
-            self.manager, "_stop_codex"
-        ), patch.object(
-            self.manager,
-            "ensure_codex_patches",
-            side_effect=RuntimeError("unknown version"),
-        ), patch.object(
-            self.manager, "launch_codex", return_value="opened"
-        ) as launch:
-            with self.assertRaisesRegex(RuntimeError, "unknown version"):
-                self.manager.run_post_switch_actions(
-                    "MaoLocal", sync_models=True
+    def test_switch_and_launch_leave_model_files_unchanged(self):
+        self.save_account(model_catalog_url=self.base_url + "/catalog", api_key_model_discovery=True)
+        model_files = [self.paths.codex_home / name for name in ("models.json", "models_cache.json")]
+        for path in model_files:
+            path.write_text('{"models": ["existing"]}')
+        before = {path: path.read_bytes() for path in model_files}
+        bundle = [{"slug": "bundled", "visibility": "list"}]
+        with patch.object(self.manager, "codex_running", return_value=False), patch.object(
+            self.manager, "_bundled_catalog", return_value=bundle
+        ):
+            self.manager.activate_account("MaoLocal")
+            config_before_launch = self.paths.config.read_bytes()
+            with patch("codex_manager.os.uname") as uname, patch("codex_manager.subprocess.run") as run:
+                uname.return_value.sysname = "Darwin"
+                self.assertEqual(self.manager.launch_codex(restart=False), "opened")
+                run.assert_called_once_with(
+                    ["/usr/bin/open", "-b", "com.openai.codex"], check=True,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
                 )
-
-        launch.assert_called_once_with(restart=False, apply_patches=False)
+        config = tomllib.loads(self.paths.config.read_text())
+        self.assertEqual(config["model_providers"]["MaoLocal"]["model_catalog_url"], self.base_url + "/catalog")
+        self.assertTrue(config["features"]["api_key_model_discovery"])
+        self.assertNotIn("model_catalog_json", config)
+        self.assertFalse(self.paths.bundled_model_catalog.exists())
+        self.assertEqual(self.paths.config.read_bytes(), config_before_launch)
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content)
 
     def test_complete_official_login_saves_private_profile_without_exposing_tokens(self):
         token = "official-secret-token"
@@ -151,7 +102,7 @@ class AccountManagerTests(AccountManagerTestBase):
         self.paths.config.write_text(
             'model = "vendor-coder"\n'
             'model_provider = "custom"\n'
-            f'model_catalog_json = "{self.paths.catalog}"\n'
+            f'model_catalog_json = "{self.paths.codex_home / "models.json"}"\n'
         )
         bundled = [
             {
@@ -166,11 +117,12 @@ class AccountManagerTests(AccountManagerTestBase):
         ):
             result = self.manager.activate_account("Official")
 
-        self.assertEqual(result["models"], 1)
+        self.assertEqual(result["model"], "vendor-coder")
         config = self.paths.config.read_text()
         self.assertIn('model_provider = "openai"', config)
         self.assertIn('cli_auth_credentials_store = "file"', config)
-        self.assertNotIn("model_catalog_json", config)
+        self.assertNotIn("model_catalog_json", tomllib.loads(config))
+        self.assertIn('model = "vendor-coder"', config)
         self.assertEqual(json.loads(self.paths.auth.read_text())["tokens"]["access_token"], token)
         self.assertEqual(self.manager.state()["active_account"], "Official")
 
@@ -271,13 +223,11 @@ class AccountManagerTests(AccountManagerTestBase):
         )
         self.paths.config.write_text('model = "old-model"\nmodel_provider = "custom"\n')
         self.paths.auth.write_text(json.dumps({"OPENAI_API_KEY": "old-key"}))
-        self.paths.sync_state.write_text(json.dumps({"status": "old"}))
         before = {
             path: path.read_bytes()
             for path in (
                 self.paths.config,
                 self.paths.auth,
-                self.paths.sync_state,
                 self.paths.accounts,
             )
         }
@@ -361,7 +311,7 @@ class AccountManagerTests(AccountManagerTestBase):
         with patch.dict("codex_manager.os.environ", {"OPENSSL_MODULES": "/stale/modules"}), patch(
             "codex_manager.subprocess.run", return_value=completed
         ) as run, patch("codex_manager.shutil.which", return_value=str(binary)):
-            self.manager._bundled_catalog()
+            CodexManager._bundled_catalog(self.manager)
 
         self.assertNotIn("OPENSSL_MODULES", run.call_args.kwargs["env"])
 
@@ -417,16 +367,15 @@ class AccountManagerTests(AccountManagerTestBase):
         )
         self.paths.auth.write_text('{"OPENAI_API_KEY":"current-secret"}')
         state = self.manager.state()
-        self.assertEqual(state["active_account"], "MaoLocal")
-        self.assertEqual({account["name"] for account in state["accounts"]}, {"old", "MaoLocal"})
+        self.assertEqual(state["active_account"], "")
+        self.assertEqual({account["name"] for account in state["accounts"]}, {"old"})
         self.assertNotIn("current-secret", json.dumps(state))
 
     def test_files_and_backups_use_restrictive_permissions(self):
         self.save_account()
+        self.paths.config.write_text('model = "previous"\n')
         self.manager.activate_account("MaoLocal")
-        self.manager.sync_active()
-        self.manager.switch_model("vendor-coder")
-        for path in (self.paths.accounts, self.paths.config, self.paths.auth, self.paths.catalog):
+        for path in (self.paths.accounts, self.paths.config, self.paths.auth):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         for backup in self.paths.backups.iterdir():
             self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
@@ -459,6 +408,9 @@ class AccountManagerTests(AccountManagerTestBase):
         legacy = json.loads(self.paths.accounts.read_text())
         legacy["version"] = 7
         account = legacy["accounts"]["Existing Route"]
+        account["provider_id"] = "stable_provider"
+        account["provider_config"]["name"] = "Original Display"
+        self.paths.config.write_text(self.paths.config.read_text().replace("MaoLocal", "stable_provider"))
         account.pop("connection_type")
         account.pop("auth_mode")
         account.pop("transport")
@@ -466,8 +418,7 @@ class AccountManagerTests(AccountManagerTestBase):
             "active_account": legacy["active_account"],
             "provider_id": account["provider_id"],
             "api_key": account["api_key"],
-            "model_ids": account["model_ids"],
-            "catalog_model_ids": account["catalog_model_ids"],
+            "default_model": account["default_model"],
             "provider_config": account["provider_config"],
         }
         self.paths.accounts.write_text(json.dumps(legacy))
@@ -481,8 +432,7 @@ class AccountManagerTests(AccountManagerTestBase):
         for key in (
             "provider_id",
             "api_key",
-            "model_ids",
-            "catalog_model_ids",
+            "default_model",
             "provider_config",
         ):
             self.assertEqual(migrated[key], expected[key])

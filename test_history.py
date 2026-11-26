@@ -58,7 +58,7 @@ class AccountManagerTests(AccountManagerTestBase):
     def test_sub2api_claim_history_uses_stable_provider_id_for_jsonl_and_sqlite(self):
         self.save_account(
             "Sub Pool Display Name",
-            "stable_sub2api_provider",
+            "MaoLocal",
             connection_type="sub2api",
             auth_mode="legacy",
             transport="http_sse",
@@ -76,11 +76,11 @@ class AccountManagerTests(AccountManagerTestBase):
         first = json.loads(active.read_text().splitlines()[0])
         self.assertEqual(
             first["payload"]["model_provider"],
-            "stable_sub2api_provider",
+            "MaoLocal",
         )
         with sqlite3.connect(database) as connection:
             providers = {row[0] for row in connection.execute("SELECT model_provider FROM threads")}
-        self.assertEqual(providers, {"stable_sub2api_provider"})
+        self.assertEqual(providers, {"MaoLocal"})
 
     def test_claim_all_rewrites_every_session_meta_and_preserves_other_lines(self):
         self.save_account()

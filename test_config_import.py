@@ -31,3 +31,22 @@ wire_api = "responses"
                 with self.assertRaises(ValueError) as error:
                     parse_provider_config(text)
                 self.assertNotIn('secret', str(error.exception))
+
+    def test_invalid_catalog_flags_and_secret_headers_are_rejected_without_echo(self):
+        for addition in [
+            'model_catalog_url = "https://user:secret@api.example.com/catalog"',
+            'requires_openai_auth = "secret"',
+            'http_headers = { "x-test" = 12 }',
+            'request_max_retries = true',
+        ]:
+            with self.subTest(addition=addition), self.assertRaises(ValueError) as error:
+                parse_provider_config(self.config + addition + "\n")
+            self.assertNotIn('secret', str(error.exception))
+        with self.assertRaises(ValueError):
+            parse_provider_config(self.config + '[features]\napi_key_model_discovery = "true"\n')
+
+    def test_unknown_fields_are_explicitly_reported_and_not_passed_through(self):
+        result = parse_provider_config(self.config + 'experimental_bearer_token = "secret"\n[features]\nother = true\n')
+        self.assertIn('model_providers.krill.experimental_bearer_token', result['ignored_fields'])
+        self.assertIn('features.other', result['ignored_fields'])
+        self.assertNotIn('secret', str(result))

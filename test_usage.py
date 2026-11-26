@@ -138,13 +138,31 @@ class UsageTests(unittest.TestCase):
         self.assertEqual(result["totals"]["output_tokens"], 20)
         self.assertAlmostEqual(result["totals"]["estimated_cost"], .0004)
 
+    def test_official_dashboard_uses_usd_prices(self):
+        self.write_rollout("official-usd.jsonl", "openai", [
+            {"type": "turn_context", "payload": {"model": "gpt-6.1-sol"}},
+            self.token_event("2026-09-23T08:00:00Z", (1000, 800, 0, 100), (1000, 800, 0, 100)),
+        ])
+        manager = CodexManager(Paths(self.home, self.home / "manager"))
+        store = {"active_account": "current", "accounts": {"current": {"account_type": "official"}}}
+        prices = {"gpt-6.1-sol": ((2, .1, 2.5, 10), (4, .2, 5, 15))}
+        with patch.object(manager, "_load_store", return_value=store), patch(
+            "codex_manager.get_api_prices", return_value=(prices, {"status": "cached"})
+        ):
+            result = manager.usage_for_period("date", "2026-09-23")
+        self.assertEqual(result["unit"], "USD")
+        self.assertAlmostEqual(result["totals"]["estimated_cost"], .00148)
+        self.assertEqual(result["pricing"]["status"], "cached")
+
     def test_manager_period_selection_validates_dates(self):
         manager = CodexManager(Paths(self.home, self.home / "manager"))
         store = {"active_account": "current", "accounts": {"current": {"account_type": "custom", "provider_id": "vendor"}}}
         with patch.object(manager, "_load_store", return_value=store), patch(
-            "codex_manager.summarize_range", return_value={"ok": True}
+            "codex_manager.get_api_prices", return_value=({}, {"source": "test source"})
+        ), patch(
+            "codex_manager.summarize_range", return_value={"price_source": "bundled"}
         ) as summarize:
-            self.assertEqual(manager.usage_for_period("date", "2026-09-22"), {"ok": True})
+            self.assertEqual(manager.usage_for_period("date", "2026-09-22")["price_source"], "test source")
             start, end = summarize.call_args.args[-2:]
             self.assertEqual(start.date().isoformat(), "2026-09-22")
             self.assertEqual(end - start, timedelta(days=1))

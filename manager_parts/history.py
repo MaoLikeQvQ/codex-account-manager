@@ -1,10 +1,39 @@
 from __future__ import annotations
 
+from contextlib import closing
+
 from .common import *
 from .common import _now
 
 
 class HistoryMixin:
+    def _settle_history_claim(self, name: str, status: str, failed: int = 0) -> None:
+        store = self._load_store()
+        pending = store.get("pending_history_claim")
+        if not isinstance(pending, dict) or pending.get("account") != name:
+            return
+        if status == "completed":
+            store.pop("pending_history_claim", None)
+        else:
+            pending.update({"status": status, "failed": failed})
+        self._save_store(store)
+
+    def _apply_pending_history_claim(self) -> dict[str, Any]:
+        store = self._load_store()
+        pending = store.get("pending_history_claim")
+        if not isinstance(pending, dict):
+            return {"status": "completed"}
+        name = str(pending.get("account", ""))
+        account = store.get("accounts", {}).get(name)
+        if name != store.get("active_account") or not isinstance(account, dict) or account.get("pending_apply"):
+            return {"status": "pending"}
+        try:
+            result = self.claim_all_conversations(name)
+            return {"status": "partial" if result["failed"] else "completed", **result}
+        except Exception:
+            self._settle_history_claim(name, "error", 1)
+            return {"status": "error", "failed": 1}
+
     def claim_all_conversations(self, account_name: str | None = None) -> dict[str, Any]:
         """把 Codex 原生会话 Provider 元数据统一到指定账号。"""
         store = self._load_store()
@@ -14,6 +43,8 @@ class HistoryMixin:
             raise KeyError(f"账号不存在：{name}")
         if name != str(store.get("active_account", "")):
             raise ValueError("只能归纳到当前已启用账号")
+        if account.get("pending_apply"):
+            raise ValueError("当前账号有待应用修改，请先应用配置再归纳历史")
         provider_id = str(account.get("provider_id", "")).strip()
         if not provider_id:
             raise ValueError("当前账号缺少 Provider ID")
@@ -53,24 +84,26 @@ class HistoryMixin:
                 "updated_at": verified_at,
             }
             self._record_history_state("ok" if not errors else "partial", result)
+            self._settle_history_claim(name, "partial" if errors else "completed", len(errors))
             return result
 
         backup_dir = self._create_history_rollback(changes, database_targets, provider_id)
-        applied: list[RolloutRecord] = []
+        applied: list[tuple[RolloutRecord, os.stat_result]] = []
         session_meta_rows_updated = 0
         try:
             for item in changes:
-                applied.append(item)
-                session_meta_rows_updated += self._rewrite_rollout_provider(item, provider_id)
+                updated, written_stat = self._rewrite_rollout_provider(item, provider_id)
+                applied.append((item, written_stat))
+                session_meta_rows_updated += updated
             sqlite_rows = self._update_database_providers(
                 database_targets,
                 provider_id,
                 backup_dir,
             )
         except Exception:
-            for item in reversed(applied):
+            for item, written_stat in reversed(applied):
                 try:
-                    self._restore_rollout_from_backup(item, backup_dir)
+                    self._restore_rollout_from_backup(item, backup_dir, written_stat)
                 except Exception:
                     pass
             self._record_history_state(
@@ -104,6 +137,7 @@ class HistoryMixin:
             "updated_at": _now(),
         }
         self._record_history_state("ok" if not errors else "partial", result)
+        self._settle_history_claim(name, "partial" if errors else "completed", len(errors))
         return result
 
     def _conversation_state(self) -> dict[str, Any]:
@@ -303,7 +337,14 @@ class HistoryMixin:
                 overlap = data[-max(len(marker) - 1, 0) :]
         return False
 
-    def _rewrite_rollout_provider(self, item: RolloutRecord, provider_id: str) -> int:
+    @staticmethod
+    def _same_rollout_version(path: Path, expected: os.stat_result) -> bool:
+        current = path.stat()
+        return (current.st_ino, current.st_size, current.st_mtime_ns) == (
+            expected.st_ino, expected.st_size, expected.st_mtime_ns,
+        )
+
+    def _rewrite_rollout_provider(self, item: RolloutRecord, provider_id: str) -> tuple[int, os.stat_result]:
         stat = item.path.stat()
         if stat.st_ino != item.inode or stat.st_size != item.size or stat.st_mtime_ns != item.mtime_ns:
             raise RuntimeError(f"会话在扫描后发生变化：{item.path.name}")
@@ -343,14 +384,19 @@ class HistoryMixin:
                 destination.flush()
                 os.fsync(destination.fileno())
             os.chmod(temporary, item.mode)
+            os.utime(temporary, ns=(item.atime_ns, item.mtime_ns))
+            if not self._same_rollout_version(item.path, stat):
+                raise RuntimeError(f"会话在归纳时发生变化：{item.path.name}")
+            written_stat = os.stat(temporary)
             os.replace(temporary, item.path)
-            os.utime(item.path, ns=(item.atime_ns, item.mtime_ns))
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-        return updated
+        return updated, written_stat
 
-    def _restore_rollout_from_backup(self, item: RolloutRecord, backup_dir: Path) -> None:
+    def _restore_rollout_from_backup(
+        self, item: RolloutRecord, backup_dir: Path, written_stat: os.stat_result,
+    ) -> None:
         source = backup_dir / "sessions" / item.path.relative_to(self.paths.codex_home)
         fd, temporary = tempfile.mkstemp(prefix=f".{item.path.name}.", dir=item.path.parent)
         try:
@@ -359,6 +405,8 @@ class HistoryMixin:
                 destination.flush()
                 os.fsync(destination.fileno())
             os.chmod(temporary, item.mode)
+            if not self._same_rollout_version(item.path, written_stat):
+                raise RuntimeError(f"会话在归纳后发生变化，已保留新内容：{item.path.name}")
             os.replace(temporary, item.path)
             os.utime(item.path, ns=(item.atime_ns, item.mtime_ns))
         finally:
@@ -378,7 +426,7 @@ class HistoryMixin:
         for path in sorted(set(candidates)):
             if not path.is_file():
                 continue
-            with self._sqlite_connection(path, readonly=True) as connection:
+            with closing(self._sqlite_connection(path, readonly=True)) as connection:
                 tables = tuple(
                     table
                     for table in ("threads", "local_thread_catalog")
@@ -413,7 +461,7 @@ class HistoryMixin:
         tables: tuple[str, ...],
         provider_id: str,
     ) -> int:
-        with self._sqlite_connection(path, readonly=True) as connection:
+        with closing(self._sqlite_connection(path, readonly=True)) as connection:
             return sum(
                 int(
                     connection.execute(
@@ -464,7 +512,7 @@ class HistoryMixin:
         for index, (path, tables) in enumerate(database_targets):
             destination = backup_dir / "sqlite" / f"{index}-{path.name}"
             destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            with self._sqlite_connection(path, readonly=True) as source:
+            with closing(self._sqlite_connection(path, readonly=True)) as source:
                 source.execute("PRAGMA query_only = ON")
                 destination_connection = sqlite3.connect(destination)
                 try:
@@ -504,7 +552,7 @@ class HistoryMixin:
         }
         try:
             for path, tables in targets:
-                with self._sqlite_connection(path) as connection:
+                with closing(self._sqlite_connection(path)) as connection:
                     connection.execute("BEGIN IMMEDIATE")
                     try:
                         for table in tables:
@@ -521,7 +569,7 @@ class HistoryMixin:
                 completed.append((path, backup_by_path[str(path)]))
         except Exception:
             for path, backup in reversed(completed):
-                with self._sqlite_connection(backup, readonly=True) as source:
+                with closing(self._sqlite_connection(backup, readonly=True)) as source:
                     destination = self._sqlite_connection(path)
                     try:
                         source.backup(destination)

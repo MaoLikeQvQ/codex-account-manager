@@ -16,8 +16,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from codex_manager import (
-    CODEX_MODEL_FILTER_MARKER,
-    CODEX_SPARKLE_RELATIVE_PATH,
     CodexManager,
     Paths,
 )
@@ -96,13 +94,11 @@ class AccountManagerTestBase(unittest.TestCase):
         root = Path(self.temporary.name)
         self.paths = Paths(root / "codex", root / "manager")
         self.manager = CodexManager(self.paths)
-        self.signature_compatibility = patch.object(
-            self.manager,
-            "_codex_update_signatures_are_compatible",
-            return_value=True,
-        )
-        self.signature_compatibility_mock = self.signature_compatibility.start()
-        self.addCleanup(self.signature_compatibility.stop)
+        catalog = patch.object(self.manager, "_bundled_catalog", return_value=[
+            {"slug": "gpt-5.6-sol", "visibility": "list", "priority": 1},
+        ])
+        catalog.start()
+        self.addCleanup(catalog.stop)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), ModelHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -127,49 +123,3 @@ class AccountManagerTestBase(unittest.TestCase):
         }
         payload.update(overrides)
         return self.manager.save_account(payload)
-
-    def make_fake_codex_app(
-        self,
-        model_filter: bytes | None = None,
-        codex_binary: bytes | None = None,
-    ) -> Path:
-        app = Path(self.temporary.name) / "ChatGPT.app"
-        resources = app / "Contents/Resources"
-        macos = app / "Contents/MacOS"
-        signature = app / "Contents/_CodeSignature"
-        resources.mkdir(parents=True)
-        macos.mkdir(parents=True)
-        signature.mkdir(parents=True)
-        filter_code = model_filter or (
-            b"function allowed({additionalAvailableModels:e,authMethod:t,"
-            b"availableModels:n,isCustomModelProvider:r,model:i,useHiddenModels:a})"
-            b"{return e?.has(i.model)===!0||i.model!==`codex-auto-review`&&"
-            b"(a&&!r&&t!==`amazonBedrock`?n.has(i.model):!i.hidden)};"
-            b"function announcement(e,t,n,r){return "
-            b"{announcementContent:n,showAnnouncement:e&&!t,dismissAnnouncement:r}};"
-            b"const gates=[{gateName:`9999999999`,featureKey:`unrelated_feature`},"
-            b"{gateName:`9999999999`,featureKey:`unrelated_feature`}]"
-        )
-        (resources / "app.asar").write_bytes(filter_code)
-        (resources / "codex").write_bytes(
-            b"original codex binary" if codex_binary is None else codex_binary
-        )
-        info = {
-            "CFBundleShortVersionString": "test-version",
-            "ElectronAsarIntegrity": {
-                "Resources/app.asar": {"algorithm": "SHA256", "hash": "old"}
-            },
-        }
-        (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
-        (macos / "ChatGPT").write_bytes(b"original executable")
-        (signature / "CodeResources").write_bytes(b"original code resources")
-        sparkle = app / CODEX_SPARKLE_RELATIVE_PATH
-        for relative in (
-            "Versions/B/XPCServices/Installer.xpc/Contents/MacOS",
-            "Versions/B/XPCServices/Downloader.xpc/Contents/MacOS",
-            "Versions/B/Updater.app/Contents/MacOS",
-        ):
-            (sparkle / relative).mkdir(parents=True)
-        (sparkle / "Versions/B/Autoupdate").write_bytes(b"original autoupdate")
-        (sparkle / "Versions/B/Sparkle").write_bytes(b"original sparkle")
-        return app

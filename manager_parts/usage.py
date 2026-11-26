@@ -11,8 +11,12 @@ TOKEN_FIELDS = ("input_tokens", "cached_input_tokens", "cache_write_input_tokens
 PRICE_SOURCE = "https://developers.openai.com/api/docs/pricing"
 CREDIT_SOURCE = "https://learn.chatgpt.com/docs/pricing#token-rates"
 
-# Standard-rate prices per million tokens: input, cached input, cache write, output.
+# Standard rates per million tokens: input, cached input, 30-minute cache write, output.
 API_PRICES = {
+    "gpt-6.2-astra": ((8, .4, 10, 40), (16, .8, 20, 60)),
+    "gpt-6.2-sol": ((2, .1, 2.5, 10), (4, .2, 5, 15)),
+    "gpt-6.1-sol": ((2, .1, 2.5, 10), (4, .2, 5, 15)),
+    "gpt-6.1-terra": ((1, .05, 1.25, 5), (2, .1, 2.5, 7.5)),
     "gpt-6-astra": ((10, 1, 12.5, 50), (20, 2, 25, 75)),
     "gpt-6-sol": ((2, .2, 2.5, 10), (4, .4, 5, 15)),
     "gpt-6-luna": ((.1, .01, .125, .5), (.2, .02, .25, .75)),
@@ -24,6 +28,10 @@ API_PRICES = {
     "gpt-5.4-mini": ((.75, .075, None, 4.5), None),
 }
 CREDIT_PRICES = {
+    "gpt-6.2-astra": (200, 10, 1000),
+    "gpt-6.2-sol": (50, 2.5, 250),
+    "gpt-6.1-sol": (50, 2.5, 250),
+    "gpt-6.1-terra": (25, 1.25, 125),
     "gpt-6-astra": (250, 25, 1250),
     "gpt-6-sol": (50, 5, 250),
     "gpt-6-luna": (2.5, .25, 12.5),
@@ -56,7 +64,7 @@ def _event_delta(total: Any, last: Any, previous: dict[str, int] | None) -> tupl
     return {key: current[key] - previous[key] for key in TOKEN_FIELDS}, current
 
 
-def _cost(model: str, usage: dict[str, int], official: bool) -> float | None:
+def _cost(model: str, usage: dict[str, int], official: bool, api_prices=None) -> float | None:
     # Reasoning is already included in output_tokens; never bill it a second time.
     if official:
         rates = CREDIT_PRICES.get(model)
@@ -68,15 +76,17 @@ def _cost(model: str, usage: dict[str, int], official: bool) -> float | None:
             + usage["cached_input_tokens"] * cached_rate
             + usage["output_tokens"] * output_rate
         ) / 1_000_000
-    pair = API_PRICES.get(model)
+    pair = api_prices.get(model) if api_prices is not None else None
+    if pair is None:
+        pair = API_PRICES.get(model)
     if pair is None:
         return None
     rates = pair[1] if usage["input_tokens"] > 272_000 else pair[0]
-    if rates is None or (rates[2] is None and usage["cache_write_input_tokens"]):
+    if rates is None or (rates[2] is None and usage["cache_write_input_tokens"]) or (rates[1] is None and usage["cached_input_tokens"]):
         return None
     return (
         (usage["input_tokens"] - usage["cached_input_tokens"] - usage["cache_write_input_tokens"]) * rates[0]
-        + usage["cached_input_tokens"] * rates[1]
+        + usage["cached_input_tokens"] * (rates[1] or 0)
         + usage["cache_write_input_tokens"] * (rates[2] or 0)
         + usage["output_tokens"] * rates[3]
     ) / 1_000_000
@@ -89,7 +99,7 @@ def summarize_today(codex_home: Path, provider_id: str, official: bool, now: dat
 
 
 def summarize_range(
-    codex_home: Path, provider_id: str, official: bool, start: datetime, end: datetime
+    codex_home: Path, provider_id: str, official: bool, start: datetime, end: datetime, *, api_prices=None
 ) -> dict[str, Any]:
     if start.tzinfo is None or end.tzinfo is None or end <= start:
         raise ValueError("用量统计时间范围无效")
@@ -136,7 +146,7 @@ def summarize_range(
                         row = rows[model or "未知模型"]
                         for key in TOKEN_FIELDS:
                             row[key] += delta[key]
-                        cost = _cost(model, delta, official)
+                        cost = _cost(model, delta, official, api_prices)
                         if cost is None:
                             row["unpriced_tokens"] += delta["input_tokens"] + delta["output_tokens"]
                         else:

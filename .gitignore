@@ -4,6 +4,10 @@ __pycache__/
 *.py[cod]
 build/
 dist/
+frontend/node_modules/
+frontend/test-results/
+frontend/playwright-report/
+web/assets/
 output/
 .playwright-cli/
 .env

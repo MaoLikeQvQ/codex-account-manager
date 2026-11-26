@@ -23,37 +23,6 @@ class StorageMixin:
             "账号切换",
         )
 
-    @staticmethod
-    def _sync_state_text(
-        status: str,
-        account: str,
-        count: int,
-        endpoint: str,
-        error: str,
-    ) -> str:
-        safe_endpoint = endpoint.split("?", 1)[0].split("#", 1)[0]
-        return (
-            json.dumps(
-                {
-                    "status": status,
-                    "account": account,
-                    "model_count": count,
-                    "endpoint": safe_endpoint,
-                    "error": error,
-                    "updated_at": _now(),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n"
-        )
-
-    def _record_sync(self, status: str, account: str, count: int, endpoint: str, error: str) -> None:
-        self._atomic_write(
-            self.paths.sync_state,
-            self._sync_state_text(status, account, count, endpoint, error),
-        )
-
     def _public_account(self, name: str, account: dict[str, Any], active: bool) -> dict[str, Any]:
         provider = account.get("provider_config", {})
         account_type = self._account_type(account)
@@ -71,6 +40,10 @@ class StorageMixin:
             "provider_id": str(account.get("provider_id", "")),
             "provider_name": str(provider.get("name", "")),
             "base_url": str(provider.get("base_url", "")),
+            "model_catalog_url": str(provider.get("model_catalog_url", "")),
+            "requires_openai_auth": bool(provider.get("requires_openai_auth", True)),
+            "api_key_model_discovery": account.get("api_key_model_discovery", bool(provider.get("model_catalog_url"))),
+            "pending_apply": bool(account.get("pending_apply")),
             "wire_api": str(provider.get("wire_api", "responses")),
             "default_model": str(account.get("default_model", "")),
             "reasoning_effort": str(account.get("reasoning_effort", "high")),
@@ -91,36 +64,26 @@ class StorageMixin:
             "provider_id": provider_id,
             "base_url": str(provider.get("base_url", "")) if isinstance(provider, dict) else "",
             "reasoning_effort": str(config.get("model_reasoning_effort", "")),
-            "catalog_path": str(config.get("model_catalog_json", "")),
             "auth_present": bool(self._auth_api_key(self._read_text(self.paths.auth))),
         }
 
-    def _catalog_state(
-        self,
-        models: list[dict[str, Any]],
-        official: bool = False,
-    ) -> dict[str, Any]:
-        if official:
-            return {
-                "path": "Codex bundled catalog",
-                "exists": True,
-                "model_count": len(models),
-                "updated_at": "",
-            }
-        payload = self._read_json(self.paths.catalog, {})
-        return {
-            "path": str(self.paths.catalog),
-            "exists": self.paths.catalog.is_file(),
-            "model_count": len(models),
-            "updated_at": str(payload.get("updated_at", "")),
-        }
+    def _without_managed_catalog(self, text: str) -> str:
+        try:
+            catalog = tomllib.loads(text).get("model_catalog_json") if text.strip() else None
+        except tomllib.TOMLDecodeError:
+            return text
+        if catalog not in {str(self.paths.codex_home / "models.json"), str(self.paths.bundled_model_catalog)}:
+            return text
+        updated = self._remove_top_level(text, {"model_catalog_json"})
+        tomllib.loads(updated)
+        return updated
 
-    def _read_catalog_models(self) -> list[dict[str, Any]]:
-        payload = self._read_json(self.paths.catalog, {})
-        models = payload.get("models", [])
-        if not isinstance(models, list):
-            return []
-        return [item for item in models if isinstance(item, dict) and item.get("slug")]
+    def _clear_managed_catalog(self) -> None:
+        text = self._read_text(self.paths.config)
+        updated = self._without_managed_catalog(text)
+        if updated != text:
+            self._backup_many(self.paths.config)
+            self._atomic_write(self.paths.config, updated)
 
     def _write_private_json(self, path: Path, payload: Any) -> None:
         self._atomic_write(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
@@ -155,7 +118,7 @@ class StorageMixin:
         if isinstance(value, list):
             return "[" + ", ".join(StorageMixin._toml_value(item) for item in value) + "]"
         if isinstance(value, dict):
-            body = ", ".join(f"{key} = {StorageMixin._toml_value(item)}" for key, item in value.items())
+            body = ", ".join(f"{json.dumps(str(key))} = {StorageMixin._toml_value(item)}" for key, item in value.items())
             return "{ " + body + " }"
         return json.dumps(str(value), ensure_ascii=False)
 
@@ -203,22 +166,69 @@ class StorageMixin:
 
     @staticmethod
     def _replace_provider_block(text: str, provider_id: str, block: str) -> str:
+        kept = []
+        owned = False
+        for line in text.splitlines(keepends=True):
+            if line.lstrip().startswith("["):
+                # Parse a table header so quoted keys and nested header tables are removed too.
+                try:
+                    section = tomllib.loads(line)
+                except tomllib.TOMLDecodeError:
+                    section = {}
+                owned = provider_id in section.get("model_providers", {})
+            if not owned:
+                kept.append(line)
+        return "".join(kept).rstrip() + "\n\n" + block.rstrip() + "\n"
+
+    @staticmethod
+    def _remove_section_value(text: str, section: str, key: str) -> str:
+        inline = StorageMixin._update_inline_section(text, section, key, None, remove=True)
+        if inline is not None:
+            return inline
+        inside = False
+        kept = []
+        for line in text.splitlines(keepends=True):
+            if line.lstrip().startswith("["):
+                inside = line.split("#", 1)[0].strip() == f"[{section}]"
+            if inside and re.match(rf"^\s*{re.escape(key)}\s*=", line):
+                continue
+            kept.append(line)
+        return "".join(kept)
+
+    @staticmethod
+    def _update_inline_section(text, section, key, value, *, remove=False):
         lines = text.splitlines(keepends=True)
-        header = f"[model_providers.{provider_id}]"
-        start = next((i for i, line in enumerate(lines) if line.strip() == header), None)
-        block_lines = block.splitlines(keepends=True)
-        if start is None:
-            if lines and lines[-1].strip():
-                lines.append("\n")
-            lines.extend(block_lines)
-        else:
-            end = next(
-                (i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")),
-                len(lines),
-            )
-            lines[start:end] = block_lines + (["\n"] if end < len(lines) else [])
-        result = "".join(lines)
-        return result if result.endswith("\n") else result + "\n"
+        for index, line in enumerate(lines):
+            if line.lstrip().startswith("["):
+                break
+            if re.match(rf"^\s*{re.escape(section)}\s*=", line):
+                table = tomllib.loads(text).get(section)
+                if not isinstance(table, dict):
+                    raise ValueError(f"{section} 必须为配置表")
+                table = dict(table)
+                if remove:
+                    table.pop(key, None)
+                else:
+                    table[key] = value
+                lines[index] = f"{section} = {StorageMixin._toml_value(table)}\n"
+                return "".join(lines)
+        return None
+
+    def _apply_account_features(self, text, store, values):
+        baseline = store.setdefault("account_feature_baseline", {})
+        features = tomllib.loads(text).get("features", {})
+        for key, value in values.items():
+            baseline.setdefault(key, {"present": key in features, "value": features.get(key)})
+            text = self._upsert_section_value(text, "features", key, value)
+        return text
+
+    def _restore_account_features(self, text, store):
+        for key, original in store.pop("account_feature_baseline", {}).items():
+            if original["present"]:
+                text = self._upsert_section_value(text, "features", key, original["value"])
+            else:
+                text = self._remove_section_value(text, "features", key)
+        return text
 
     @staticmethod
     def _replace_toml_section(text: str, section: str, block: str) -> str:
@@ -242,9 +252,12 @@ class StorageMixin:
 
     @staticmethod
     def _upsert_section_value(text: str, section: str, key: str, value: Any) -> str:
+        inline = StorageMixin._update_inline_section(text, section, key, value)
+        if inline is not None:
+            return inline
         lines = text.splitlines(keepends=True)
         header = f"[{section}]"
-        start = next((i for i, line in enumerate(lines) if line.strip() == header), None)
+        start = next((i for i, line in enumerate(lines) if line.split("#", 1)[0].strip() == header), None)
         rendered = f"{key} = {StorageMixin._toml_value(value)}\n"
         if start is None:
             if lines and lines[-1].strip():

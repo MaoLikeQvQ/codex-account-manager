@@ -5,6 +5,10 @@ from .common import _now
 
 
 class OfficialMixin:
+    def _official_default_model(self) -> str:
+        models = self._official_catalog_models()
+        return str(models[0].get("slug", "")) if models else ""
+
     def start_official_login(self) -> dict[str, Any]:
         """在隔离的 CODEX_HOME 中启动官方 ChatGPT OAuth 登录。"""
         binary = self._codex_binary()
@@ -170,29 +174,23 @@ class OfficialMixin:
         if not isinstance(auth_payload, dict) or not auth_payload:
             raise ValueError("官方账号缺少登录凭据，请重新登录")
         self._validate_official_auth(auth_payload)
-        models = self._official_catalog_models()
-        model_ids = [str(item.get("slug", "")) for item in models if item.get("slug")]
-        if not model_ids:
-            raise RuntimeError("Codex 没有返回官方模型目录")
-        selected_model = str(account.get("default_model", "")).strip()
-        if selected_model not in model_ids:
-            selected_model = model_ids[0]
-            account["default_model"] = selected_model
-
         config_text = self._read_text(self.paths.config)
+        selected_model = str(tomllib.loads(config_text).get("model", "")).strip()
         config_text = self._rewrite_top_level(
             config_text,
             {
-                "model": selected_model,
                 "model_provider": OFFICIAL_PROVIDER_ID,
                 "model_reasoning_effort": str(account.get("reasoning_effort", "high")),
                 "cli_auth_credentials_store": "file",
             },
         )
-        config_text = self._remove_top_level(config_text, {"model_catalog_json"})
+        config_text = self._without_managed_catalog(config_text)
+        config_text = self._restore_account_features(config_text, store)
+        tomllib.loads(config_text)
         auth_text = json.dumps(auth_payload, ensure_ascii=False, indent=2) + "\n"
         store["active_account"] = name
         store.pop("unmanaged_current_account", None)
+        self._mark_restart_required(store)
         account["updated_at"] = _now()
         self._backup_many(self.paths.config, self.paths.auth)
         self._commit_account_switch(
@@ -200,56 +198,9 @@ class OfficialMixin:
             [
                 (self.paths.config, config_text),
                 (self.paths.auth, auth_text),
-                (
-                    self.paths.sync_state,
-                    self._sync_state_text(
-                        "ok", name, len(model_ids), "official://openai", ""
-                    ),
-                ),
             ],
         )
-        return {"account": name, "model": selected_model, "models": len(model_ids)}
-
-    def _sync_official_account(
-        self,
-        store: dict[str, Any],
-        name: str,
-        account: dict[str, Any],
-    ) -> dict[str, Any]:
-        try:
-            models = self._official_catalog_models()
-            model_ids = [str(item.get("slug", "")) for item in models if item.get("slug")]
-            if not model_ids:
-                raise RuntimeError("Codex 没有返回官方模型目录")
-            current = self._read_toml(self.paths.config)
-            selected_model = str(current.get("model", ""))
-            if selected_model not in model_ids:
-                selected_model = str(account.get("default_model", ""))
-            if selected_model not in model_ids:
-                selected_model = model_ids[0]
-            config_text = self._rewrite_top_level(
-                self._read_text(self.paths.config),
-                {
-                    "model": selected_model,
-                    "model_provider": OFFICIAL_PROVIDER_ID,
-                },
-            )
-            config_text = self._remove_top_level(config_text, {"model_catalog_json"})
-            self._backup_many(self.paths.config)
-            self._atomic_write(self.paths.config, config_text)
-            account["default_model"] = selected_model
-            account["updated_at"] = _now()
-            self._save_store(store)
-            self._record_sync("ok", name, len(model_ids), "official://openai", "")
-            return {
-                "account": name,
-                "model": selected_model,
-                "models": len(model_ids),
-                "endpoint": "official://openai",
-            }
-        except Exception as exc:
-            self._record_sync("error", name, 0, "official://openai", str(exc))
-            raise
+        return {"account": name, "model": selected_model}
 
     def _capture_active_official_auth(self, store: dict[str, Any]) -> bool:
         active = store.get("accounts", {}).get(str(store.get("active_account", "")))
@@ -302,13 +253,22 @@ class OfficialMixin:
         return name
 
     @staticmethod
-    def _codex_binary() -> str:
-        bundled = CODEX_APP / "Contents/Resources/codex"
-        if bundled.is_file():
-            return str(bundled)
+    def _codex_binary_candidates() -> list[Path]:
+        candidates = [
+            CODEX_APP / "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+            CODEX_APP / "Contents/Resources/codex",
+            CODEX_APP.with_name("Codex.app") / "Contents/Resources/codex",
+        ]
         binary = shutil.which("codex")
         if binary:
-            return binary
+            candidates.append(Path(binary))
+        return candidates
+
+    @classmethod
+    def _codex_binary(cls) -> str:
+        for binary in cls._codex_binary_candidates():
+            if binary.is_file() and os.access(binary, os.X_OK):
+                return str(binary)
         raise RuntimeError("未找到 Codex CLI，无法启动官方登录")
 
     @staticmethod

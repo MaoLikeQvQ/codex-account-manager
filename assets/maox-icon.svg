@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <title>MaoX Code_</title>
+  <desc>石墨黑圆角底，浅白色 Code 字标和薄荷绿终端光标。</desc>
+  <defs><linearGradient id="tile" x1="180" y1="100" x2="840" y2="924" gradientUnits="userSpaceOnUse"><stop stop-color="#273142"/><stop offset="1" stop-color="#101722"/></linearGradient></defs>
+  <rect x="100" y="112" width="824" height="824" rx="186" fill="#101722" opacity=".18"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)"/>
+  <rect x="102" y="102" width="820" height="820" rx="184" stroke="#FFFFFF" stroke-opacity=".16" stroke-width="4"/>
+  <g stroke="#EDF3FF" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M324 426C307 406 268 406 250 430C234 452 234 555 250 578C268 602 307 602 324 582"/>
+    <rect x="372" y="466" width="80" height="132" rx="38"/>
+    <path d="M580 416V598M580 493C567 455 500 457 500 504V560C500 605 560 613 580 573"/>
+    <path d="M632 530H712V506C712 454 632 454 632 506V560C632 606 686 612 710 584"/>
+  </g>
+  <path d="M754 600H802" stroke="#7FE6BF" stroke-width="28" stroke-linecap="square"/>
+</svg>

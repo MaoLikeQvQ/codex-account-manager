@@ -33,6 +33,8 @@ def verify_bundle(bundle, version):
 INSTALL_SCRIPT = '''#!/bin/bash
 set -eu
 pid="$1"; current="$2"; staged="$3"; backup="$4"; work="$5"
+shift 5
+restart_args=("$@")
 for ((i=0; i<120; i++)); do
   if ! kill -0 "$pid" 2>/dev/null; then break; fi
   sleep 1
@@ -42,18 +44,19 @@ if kill -0 "$pid" 2>/dev/null; then
   exit 1
 fi
 moved=0
+# Guard empty array expansion for macOS Bash 3.2 under set -u.
 rollback() {
   if [ "$moved" = 1 ]; then
     if [ -e "$current" ]; then mv "$current" "$work/failed.app"; fi
     mv "$backup" "$current"
-    /usr/bin/open "$current" || true
+    /usr/bin/open "$current" ${restart_args[@]+"${restart_args[@]}"} || true
   fi
 }
 trap rollback ERR
 mv "$current" "$backup"
 moved=1
 mv "$staged" "$current"
-/usr/bin/open "$current"
+/usr/bin/open "$current" ${restart_args[@]+"${restart_args[@]}"}
 trap - ERR
 rm -rf "$backup"
 rm -rf "$work"
@@ -85,5 +88,10 @@ def prepare_install(dmg, version, current):
     script.write_text(INSTALL_SCRIPT)
     log_dir = Path.home() / 'Library/Logs/MaoLocal-Codex-Manager'
     log_dir.mkdir(parents=True, exist_ok=True)
+    restart_args = []
+    for key in ('CODEX_HOME', 'MAOLIKE_CODEX_HOME'):
+        if key in os.environ:
+            restart_args.extend(['--env', f'{key}={os.environ[key]}'])
+    restart_args.extend(['--args', *sys.argv[1:]])
     with (log_dir / 'update.log').open('w') as log:
-        subprocess.Popen(['/bin/bash', str(script), str(os.getpid()), str(current), str(staged), str(work / 'previous.app'), str(work)], stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
+        subprocess.Popen(['/bin/bash', str(script), str(os.getpid()), str(current), str(staged), str(work / 'previous.app'), str(work), *restart_args], stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
