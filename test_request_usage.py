@@ -17,10 +17,12 @@ from codex_manager import CodexManager, Paths
 from manager_parts.pricing import MODELS_DEV
 from manager_parts.request_usage import RequestUsageReader
 from manager_parts.usage import API_PRICES
+from test_support import local_timezone
 
 
 class RequestUsageTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(local_timezone('Asia/Shanghai'))
         self.temporary = tempfile.TemporaryDirectory()
         self.home = Path(self.temporary.name)
         (self.home / 'sessions').mkdir()

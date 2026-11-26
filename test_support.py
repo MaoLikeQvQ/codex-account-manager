@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
 import json
 import plistlib
 import os
@@ -9,6 +10,7 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import time
 import tomllib
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +21,19 @@ from codex_manager import (
     CodexManager,
     Paths,
 )
+
+
+@contextmanager
+def local_timezone(name):
+    """Match local-time fixtures without depending on the test runner's timezone."""
+    try:
+        with patch.dict(os.environ, {"TZ": name}):
+            time.tzset()
+            yield
+    finally:
+        # patch.dict restores TZ before refreshing the process-local cache.
+        time.tzset()
+
 
 class ModelHandler(BaseHTTPRequestHandler):
     models = ["gpt-5.6-sol", "vendor-coder"]

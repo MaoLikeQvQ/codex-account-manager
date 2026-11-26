@@ -9,10 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from manager_parts.wakeup import WakeupError, WakeupService
+from test_support import local_timezone
 
 
 class WakeupTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(local_timezone('Asia/Shanghai'))
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
