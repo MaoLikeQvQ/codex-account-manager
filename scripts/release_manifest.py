@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app_version import APP_VERSION, UPDATE_REPOSITORY
+from maox.version import APP_VERSION, UPDATE_REPOSITORY
 
 artifact = Path('dist') / f'MaoX-Account-Manager-{APP_VERSION}-arm64.dmg'
 manifest = {

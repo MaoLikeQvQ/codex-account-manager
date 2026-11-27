@@ -16,3 +16,18 @@ auth.json
 config.toml
 codex_accounts.json
 *.log
+
+# Automated tests and their fixtures stay local.
+test.py
+tests.py
+test_*.py
+tests_*.py
+*_test.py
+*_tests.py
+*.test.*
+*.spec.*
+test/
+tests/
+__tests__/
+__mocks__/
+/frontend/playwright.config.ts

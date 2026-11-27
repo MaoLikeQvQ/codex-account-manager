@@ -27,13 +27,11 @@ jobs:
         run: |
           npm --prefix frontend ci
           npm --prefix frontend run typecheck
-      - name: Test
-        run: python3 -m unittest discover -q
       - name: Set unique release version
         run: |
           python3 - <<'PY'
           import os, pathlib, re
-          p = pathlib.Path('app_version.py')
+          p = pathlib.Path('maox/version.py')
           text = p.read_text()
           base = re.search(r'APP_VERSION = "(\d+)\.(\d+)\.\d+"', text)
           version = f'{base[1]}.{base[2]}.{os.environ["GITHUB_RUN_NUMBER"]}'

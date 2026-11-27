@@ -19,18 +19,20 @@
 | 总览 | 当前账号、官方剩余配额、所选范围的 Token、API 等价估算费用、请求数、最近响应的时段分布及活跃模型。兼容渠道显示连接信息，未知数据显示「—」 |
 | 账号管理 | 桌面窗口每行两个账号，窄屏单列。兼容账号显示名称、服务地址和操作；官方卡片与其同高，右侧用透明区域竖排显示 `5h`、`7d` 配额短条与百分比，重置时间和金额预估可悬浮查看 |
 | 用量明细 | 按模型查看输入、缓存、输出、思考 Token、用量占比和费用估算，支持时间范围、模型筛选、同步参考价与 CSV 导出；少量记录时面板随内容收拢 |
-| 实时请求 | 查看本机逐响应记录、TPS、首响、总耗时、Token 与网络事件，支持时间范围、指定日期及 CSV 导出 |
+| 实时请求 | 查看今天的本机逐响应记录、TPS、首响、总耗时、Token 与网络事件，自动刷新并支持手动刷新和分页 |
 | 工具设置 | 鹈鹕 SVG 测试、Custom ImageGen 配置与应用、检查和安装更新 |
+
+添加兼容渠道时只需填写 Base URL 和 API Key，模型目录 URL 可选；填写目录地址后自动启用渠道目录，留空使用内置目录。账号名称可选，默认使用服务域名。已有配置可展开粘贴导入；编辑账号保留已有连接参数，保存不会自动切换账号。
 
 账号列表隐藏模型名称、「未启用」和「额度受限」文字；蓝色边框和「使用中」按钮标识当前账号。待应用修改和读取失败仍会提示，完整连接与额度信息可进入「详情」查看。「使用」才会切换账号，保存账号仅更新档案。
 
-窗口默认 1180 × 820，最小 960 × 640。最小窗口按标题栏下约 960 × 612 内容区检查：操作、表头和分页保持可见，长列表在记录区内滚动。侧边栏底部提供启动或重启 Codex 的入口。
+窗口默认以最小尺寸 960 × 640 打开，可手动放大。最小窗口按标题栏下约 960 × 612 内容区检查：操作、表头和分页保持可见，长列表在记录区内滚动。侧边栏底部提供启动或重启 Codex 的入口。
 
 总览时段分布只统计当前已加载的最近响应，不代表完整历史分布。用量按 Provider 汇总，多个同 Provider 账号合并统计；估算金额不是服务商账单或订阅扣费。
 
 ## 网络请求事件
 
-“实时请求”页新增“网络事件”视图，记录所有 Provider 已接入的 Codex HTTP/SSE 与 WebSocket 模型请求事件，失败和重试即使没有生成会话用量记录也可显示。支持时间范围筛选和导出网络 CSV；显示模型、会话、传输类型、目标地址（仅在事件提供时）、HTTP 状态、事件耗时及固定错误分类。当前本机 CLI 探测仅提供 /responses 路径，未提供目标主机，页面对此明确标注。HTTP 200 只表示响应头已返回，流完成或流失败单独显示，不计入响应次数和费用统计。
+“实时请求”页新增“网络事件”视图，记录所有 Provider 已接入的 Codex HTTP/SSE 与 WebSocket 模型请求事件，失败和重试即使没有生成会话用量记录也可显示。固定显示今天的最新记录，支持刷新和分页；显示模型、会话、传输类型、目标地址（仅在事件提供时）、HTTP 状态、事件耗时及固定错误分类。当前本机 CLI 探测仅提供 /responses 路径，未提供目标主机，页面对此明确标注。HTTP 200 只表示响应头已返回，流完成或流失败单独显示，不计入响应次数和费用统计。
 
 采集沿用 Codex 的本地 OTLP 导出，不修改模型请求的路由，不安装 HTTPS 解密证书。需完整退出并重新打开 Codex，使导出配置生效；管理器关闭期间、进程未配置导出或导出前退出的事件可能缺失，不能声称覆盖全部网络流量。已存在的外部导出配置保持原样，不会自动覆盖。定时唤醒直接使用 HTTP 请求，其结果显示在唤醒对话框，不经过 Codex OTLP 收集器。
 
@@ -46,17 +48,17 @@
 
 ## 账号导入与切换
 
-添加兼容账号时可以直接粘贴渠道提供的 `config.toml` 和 `auth.json`（或 API Key）。来源 Provider ID 仅用于找到对应配置并建议账号名称，所有兼容账号激活时写入的 Provider ID 与 Provider `name` 固定为 `MaoLocal`；账号列表通过各自名称区分渠道和 Key。已有旧 Provider ID 在账号库迁移时保持原样，下次激活时统一为 `MaoLocal`，不自动重写历史。
+添加兼容账号时可以直接粘贴渠道提供的 `config.toml` 和 `auth.json`（或 API Key）。来源 Provider ID 用于找到对应配置并建议账号名称。切换兼容账号时沿用 Codex 当前选中的自定义 Provider，只更新 Base URL、API Key 和可选模型目录 URL；保留 Provider 名称、模型、推理强度及其他已有连接设置。当前为官方 `openai` 或未选择 Provider 时，初始化独立的 `MaoLocal` 兼容入口，避免覆盖官方登录配置。
 
 导入保留模型、推理强度、模型目录地址、鉴权、原生模型发现开关，以及支持的请求头、环境变量和重试/超时连接参数。`web_search`、`suppress_unstable_features_warning` 等全局设置不随账号导入，页面列出未导入字段。普通编辑保留隐藏连接参数；重新导入会替换该账号的连接参数。账号档案中的模型仅用于验证连接，可留空；“读取模型列表”仅检测渠道目录接口，不能证明实际推理可用。
 
-保存只更新账号档案。编辑当前账号后显示“待应用修改”，点击“应用修改”写入配置；点击另一个账号的“使用”直接写入其连接和 Key。切换保留 Codex 当前模型，不使用账号档案中的模型；若配置中没有指定模型，则由 Codex 自行选择。模型列表由 Codex 自己维护，管理器不复制目录或改写模型缓存；写入前备份 config/auth，失败时回滚 config、auth 和账号库。账号切换后自动归纳历史，Codex 运行时配置需要重启后生效。
+保存只更新账号档案。编辑当前账号后显示“待应用修改”，点击“应用修改”写入配置；点击另一个账号的“使用”直接写入其连接和 Key。切换保留 Codex 当前模型和推理强度，不使用账号档案中的模型；若配置中没有指定模型，则由 Codex 自行选择。模型列表由 Codex 自己维护，管理器不复制目录或改写模型缓存；写入前备份 config/auth，失败时回滚 config、auth 和账号库。账号切换后自动归纳历史，Codex 运行时配置需要重启后生效。
 
 双击应用默认优先使用本机 8787 端口；被其他程序占用时依次尝试相邻端口，全部占用才由系统分配。窗口与请求计时始终使用实际监听地址。命令行显式指定的 `--port` 不自动更换，`--port 0` 使用系统分配端口。
 
 窗口打开和普通状态响应不扫描历史会话；账号切换及启动前的待处理归纳会执行完整扫描。后台状态每 10 秒更新，首页当天用量每分钟自动更新，也可手动刷新；弹窗打开时暂停轮询，慢请求不会重叠。弹窗使用静态遮罩；点击遮罩不会关闭弹窗，关闭、取消和 Escape 仍可退出，避免误点丢失尚未保存的输入。macOS 原生窗口接收失焦后的首次鼠标点击，点击按钮时同时激活窗口并执行操作。
 
-实时请求采用增量读取缓存，只保存白名单统计元数据；其他 Provider 仅检查会话头部。列表默认显示所选范围内最新 100 次响应，另显示该范围总数，可按日期筛选并导出当前已加载记录。有逐响应 `token_usage_record` 时优先使用并按响应 ID 去重，旧格式使用去重后的 `token_count` 用量事件；不会把两者重复计数。列表不返回对话正文、工具参数、私密文件路径或凭据。
+实时请求采用增量读取缓存，只保存白名单统计元数据；其他 Provider 仅检查会话头部。列表固定显示今天的最新 100 次响应，支持自动刷新、手动刷新和分页。有逐响应 `token_usage_record` 时优先使用并按响应 ID 去重，旧格式使用去重后的 `token_count` 用量事件；不会把两者重复计数。列表不返回对话正文、工具参数、私密文件路径或凭据。
 
 ## 完整流程
 
@@ -76,8 +78,8 @@ Sub2API 在本管理器中是连接类型，不是第二套账号系统。管理
 | 兼容模式 | `requires_openai_auth = true`，Key 仍写入当前 `auth.json` |
 | API Key Mode | `requires_openai_auth = false`，添加 Sub2API 要求的 actor authorization 请求头；Key 仍只写入当前 `auth.json`，不进入 `config.toml` |
 | HTTP/SSE | 使用默认 Responses HTTP/SSE 传输，不写 Provider 级 WebSocket 字段 |
-| WebSocket | 按账号设置 `[features].responses_websockets_v2`，切回官方恢复原值；保留其他功能、MCP、插件配置 |
-| 会话归属 | 兼容账号激活后统一使用 `MaoLocal`，官方账号使用 `openai`；切换后在会话文件可安全修改时自动更新 JSONL 与 SQLite |
+| WebSocket | 沿用当前自定义 Provider 的 `[features].responses_websockets_v2`；首次初始化兼容入口时使用账号的传输设置，切回官方恢复接管前的值 |
+| 会话归属 | 兼容账号沿用当前自定义 Provider，官方账号使用 `openai`；切换后在会话文件可安全修改时自动更新 JSONL 与 SQLite |
 
 模型目录按账号配置应用。兼容账号开启“启用渠道模型目录”后，将保存的 `model_catalog_url` 与 `api_key_model_discovery = true` 写入 Codex；关闭时不应用目录地址并写入 `false`，使用内置目录，账号档案仍保留目录地址。这样避免“目录地址存在但发现关闭”导致 Codex 返回空模型列表。切换回官方账号时恢复首次接管前的发现开关，由 Codex 按官方登录态获取目录，不再强制关闭发现。切换账号保留 Codex 当前选用的 `model`，不使用账号资料中的验证模型覆盖它。保存账号后需点击“应用修改”或“使用”，Codex 已运行时需重启生效。
 
@@ -130,6 +132,10 @@ underscores_in_headers on;
 
 该操作幂等；已经属于当前 Provider 的历史不会重复改写。无法读取的会话会保留并提示未完成，失败后可重试。多个官方账号的原生 Provider 都是 `openai`，因此可以切换具体官方登录凭据，但历史归属无法按不同官方邮箱区分。旧对话中的 `encrypted_content` 可能与原 Provider 绑定，归属后仍能列出，但继续对话或压缩时可能需要切回原 Provider 或新建对话。
 
+## 工程规划
+
+前后端按功能划分目录、现有文件的迁移位置与拆分职责见 [目录与文件职责规划](docs/engineering-plan.md)。该文档对应已整理的本地目录及职责；测试仅保存在本地。
+
 ## 开发运行
 
 ```bash
@@ -142,17 +148,17 @@ python3 app.py
 
 前端采用 React、TypeScript 与 MUI，Python 通过本地 HTTP 接口提供业务能力，pywebview 提供原生桌面窗口。前端构建需要 Node.js 22.12 或更高版本（建议 Node.js 22 LTS）。源码位于 `frontend/`，构建后的静态文件写入 `web/`。修改前端后重新执行 `npm --prefix frontend run build`；类型检查使用 `npm --prefix frontend run typecheck`。发布的 `.app` 只包含前端静态文件，无需用户为界面安装 Node.js；独立图片 MCP 工具仍使用它自己的 Node.js 运行时。
 
-前端开发可在 Python 服务启动后另开终端执行 `npm --prefix frontend run dev`，通过 Vite 开发页面访问代理的 `/api`。浏览器回归测试使用隔离目录和模拟 API，不读取真实账号或执行真实配置修改：先执行 `cd frontend && npx playwright install chromium webkit`，再在项目根目录执行 `npm --prefix frontend test`。已有本机 Chrome 时，可用 `PLAYWRIGHT_CHROMIUM_CHANNEL=chrome npm --prefix frontend test -- --project=chromium`。
+前端开发可在 Python 服务启动后另开终端执行 `npm --prefix frontend run dev`，通过 Vite 开发页面访问代理的 `/api`。自动化测试、测试辅助文件和 Playwright 配置仅保存在本机，不提交 Git，新克隆不包含这些文件。已有本地测试时，浏览器回归使用隔离目录和模拟 API，不读取真实账号或执行真实配置修改：先执行 `cd frontend && npx playwright install chromium webkit`，再在项目根目录执行 `npm --prefix frontend test`。已有本机 Chrome 时，可用 `PLAYWRIGHT_CHROMIUM_CHANNEL=chrome npm --prefix frontend test -- --project=chromium`。
 
-测试：
+本地已保留 Python 测试文件时运行：
 
 ```bash
 python3 -m unittest discover -q
 ```
 
-手写源文件按职责拆分，单文件不超过 1000 行。`frontend/` 包含 React 界面与 MUI 主题；`web/` 为构建输出，不手动修改。`manager_parts/` 包含账号、官方登录、连接验证、图片、历史、存储及用量模块；`test_*.py` 按相同边界组织。`imagegen_plugin/server.cjs` 是打包的第三方生成产物，不作为手写模块维护。
+手写源文件按职责拆分，单文件不超过 1000 行。`frontend/` 包含 React 界面与 MUI 主题；`web/` 为构建输出，不手动修改。`maox/` 按账号、历史、用量、请求、图片、唤醒、桌面与更新等能力归类；本地测试集中在 `tests/` 并由 Git 忽略。`imagegen_plugin/server.cjs` 是打包的第三方生成产物，不作为手写模块维护。
 
-用量统计只读 `~/.codex/sessions/` 和 `~/.codex/archived_sessions/` 中所选时间范围更新的 JSONL，不向页面返回对话内容。统计按 `session_meta.model_provider` 归属；多个官方账号同属 `openai` Provider，兼容账号激活后同属 `MaoLocal` Provider，这两组分别合并统计，无法按邮箱或 Key 分别计量。估价优先同步公开参考源 [models.dev](https://models.dev/api.json)，失败时依次尝试 LiteLLM 与 OpenRouter；全部失败则使用上次缓存或内置的 [OpenAI API Standard 参考价](https://developers.openai.com/api/docs/pricing)。API 长上下文按单次输入超过 272K token 判断；本地事件未记录实际速度档位、渠道倍率或所有账单调整，因此金额仅供参考。
+用量统计只读 `~/.codex/sessions/` 和 `~/.codex/archived_sessions/` 中所选时间范围更新的 JSONL，不向页面返回对话内容。统计按 `session_meta.model_provider` 归属；多个官方账号同属 `openai` Provider，兼容账号按激活时实际使用的 Provider 分组统计，无法按邮箱或 Key 分别计量。估价优先同步公开参考源 [models.dev](https://models.dev/api.json)，失败时依次尝试 LiteLLM 与 OpenRouter；全部失败则使用上次缓存或内置的 [OpenAI API Standard 参考价](https://developers.openai.com/api/docs/pricing)。API 长上下文按单次输入超过 272K token 判断；本地事件未记录实际速度档位、渠道倍率或所有账单调整，因此金额仅供参考。
 
 在「用量明细」点击「同步模型价格」可立即拉取公开参考价，更新用量明细和请求记录中的估算。同步失败会提示原因。兼容渠道也按公开参考价估算，实际扣费以渠道账单为准。
 
@@ -195,12 +201,12 @@ python3 -m unittest discover -q
 
 ## GitHub 发布与应用更新
 
-推送到 `main` 后，GitHub Actions 在 Apple Silicon macOS runner 上执行测试、打包与校验，生成独立版本的 GitHub Release，附带 DMG 和 `update.json`。本地提交需推送到 GitHub 才会触发；其他分支不发布。也可在 Actions 手动运行。
+推送到 `main` 后，GitHub Actions 在 Apple Silicon macOS runner 上执行前端类型检查、打包与校验，不运行仅保存在本机的自动化测试，生成独立版本的 GitHub Release，附带 DMG 和 `update.json`。本地提交需推送到 GitHub 才会触发；其他分支不发布。也可在 Actions 手动运行。
 
-版本采用 `app_version.py` 的主版本、次版本与工作流运行序号（例如 `2.11.123`）。重新运行同一次工作流复用版本。工作流成功上传后才公开 Release 并标记 Latest；失败保留上一个可用版本。
+版本采用 `maox/version.py` 的主版本、次版本与工作流运行序号（例如 `2.11.123`）。重新运行同一次工作流复用版本。工作流成功上传后才公开 Release 并标记 Latest；失败保留上一个可用版本。
 
 应用启动自动检查公开仓库 Latest 的更新清单；工具页可手动检查。点击“更新并重启”后校验文件大小、SHA-256、应用标识、版本与代码签名，在安装目录准备新版副本，自动退出、替换并重新打开应用。替换或启动命令失败时尝试恢复旧版。账号数据独立保存在用户目录，更新不会随安装包覆盖。需要先安装到可写目录；从 DMG 或源码运行不支持自动替换。安装错误记录在 `~/Library/Logs/MaoLocal-Codex-Manager/update.log`。旧版 2.11.4 需通过原有 DMG 方式安装一次支持自动替换的新版，此后直接在应用内更新。
 
-发布目标在 `app_version.py` 的 `UPDATE_REPOSITORY` 配置。自动更新目前要求公开下载渠道，不在应用内保存 GitHub Token。构建仅支持 Apple Silicon，使用本地临时签名，尚未配置 Apple Developer ID 签名或公证。
+发布目标在 `maox/version.py` 的 `UPDATE_REPOSITORY` 配置。自动更新目前要求公开下载渠道，不在应用内保存 GitHub Token。构建仅支持 Apple Silicon，使用本地临时签名，尚未配置 Apple Developer ID 签名或公证。
 
 初次发布前在 GitHub 仓库 Actions 中允许工作流运行。工作流使用自带 `GITHUB_TOKEN` 和 `contents: write`，无需配置个人访问令牌。源码不包含账号库、认证文件、运行日志和本地产物；DMG 通过 Release 发布。
