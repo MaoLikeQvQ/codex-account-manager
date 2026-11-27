@@ -54,7 +54,7 @@ test("backdrop clicks preserve account and image drafts until explicitly closed"
   await expect(dialog).not.toBeVisible();
   await page.getByRole("tab", { name: "工具设置", exact: true }).click();
   await page.getByRole("button", { name: "配置", exact: true }).click();
-  const image = page.getByRole("dialog", { name: "图片生成配置" });
+  const image = page.getByRole("dialog", { name: "Custom ImageGen" });
   const model = image.getByRole("textbox", { name: "图片模型" });
   await model.fill("draft-image-model");
   await page.mouse.click(4, 4);

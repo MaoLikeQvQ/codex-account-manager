@@ -32,7 +32,7 @@ MAX_SESSION_META_BYTES = 4 * 1024 * 1024
 OFFICIAL_PROVIDER_ID = "openai"
 CUSTOM_PROVIDER_ID = "MaoLocal"
 OFFICIAL_LOGIN_TIMEOUT_SECONDS = 5 * 60
-IMAGE_PLUGIN_VERSION = "0.2.0"
+IMAGE_PLUGIN_VERSION = "0.2.1"
 CODEX_APP = Path("/Applications/ChatGPT.app")
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
@@ -85,7 +85,7 @@ class Paths:
 
     @property
     def image_skill(self) -> Path:
-        return self.codex_home / "skills" / "maolocal-imagegen" / "SKILL.md"
+        return self.codex_home / "skills" / "custom-imagegen" / "SKILL.md"
 
     @property
     def image_plugin_dir(self) -> Path:

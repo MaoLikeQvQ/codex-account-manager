@@ -42,7 +42,7 @@ class AccountManagerTests(AccountManagerTestBase):
         config_text = self.paths.config.read_text()
         self.assertNotIn("image-secret", config_text)
         self.assertTrue(tomllib.loads(config_text)["features"]["goals"])
-        self.assertNotIn("maolocal-imagegen", tomllib.loads(config_text).get("mcp_servers", {}))
+        self.assertNotIn("custom-imagegen", tomllib.loads(config_text).get("mcp_servers", {}))
 
         applied = self.manager.apply_image_generation()
 
@@ -52,11 +52,11 @@ class AccountManagerTests(AccountManagerTestBase):
         self.assertEqual(applied["installed_version"], applied["bundled_version"])
         config = tomllib.loads(self.paths.config.read_text())
         self.assertEqual(
-            config["mcp_servers"]["maolocal-imagegen"]["env"]["CUSTOM_IMAGEGEN_CONFIG"],
+            config["mcp_servers"]["custom-imagegen"]["env"]["CUSTOM_IMAGEGEN_CONFIG"],
             str(self.paths.image_config),
         )
         self.assertEqual(
-            config["mcp_servers"]["maolocal-imagegen"]["args"],
+            config["mcp_servers"]["custom-imagegen"]["args"],
             [str(self.paths.image_server)],
         )
         self.assertTrue(self.paths.image_server.is_file())
@@ -193,105 +193,128 @@ class AccountManagerTests(AccountManagerTestBase):
         responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
         result = next(item["result"] for item in responses if item.get("id") == 2)
         detail = json.loads(result["content"][0]["text"])
-        self.assertEqual(detail["provider"], "official")
-        self.assertEqual(detail["accountName"], "Official")
-        self.assertNotIn(token, completed.stdout)
+        self.assertFalse(result.get("isError", False), result)
+        self.assertEqual(detail, {
+            "configured": True,
+            "mode": "responses",
+            "imageModel": "gpt-image-2",
+            "providerChecked": False,
+        })
+        self.assertNotIn(token, completed.stdout + completed.stderr)
 
-    def test_image_mcp_sends_official_responses_request_and_parses_sse(self):
+    def test_image_mcp_delegates_official_generation_to_isolated_codex(self):
         node = shutil.which("node")
-        if not node:
-            self.skipTest("Node.js is unavailable")
+        python = shutil.which("python3")
+        if not node or not python:
+            self.skipTest("Node.js and Python are required")
         token = "e30.eyJleHAiOjQxMDI0NDQ4MDB9.signature"
-        store = {
+        self.paths.accounts.write_text(json.dumps({
             "version": 8,
-            "accounts": {
-                "Official": {
-                    "account_type": "official",
-                    "default_model": "gpt-5.6-sol",
-                    "official_auth": {
-                        "tokens": {"access_token": token, "account_id": "account-1"}
-                    },
-                }
-            },
-        }
-        self.paths.accounts.write_text(json.dumps(store))
-        output_dir = self.paths.image_config.parent / "generated-images"
-        self.paths.image_config.write_text(
-            json.dumps(
-                {
-                    "credentialSource": "managed_account",
-                    "provider": "official",
-                    "accountStorePath": str(self.paths.accounts),
-                    "accountName": "Official",
-                    "mode": "responses",
-                    "imageModel": "gpt-image-2",
-                    "mainModel": "gpt-5.6-sol",
-                    "outputDir": str(output_dir),
-                }
-            )
-        )
-        image_server = ThreadingHTTPServer(("127.0.0.1", 0), ImageSseHandler)
-        image_thread = threading.Thread(target=image_server.serve_forever, daemon=True)
-        image_thread.start()
-        self.addCleanup(image_thread.join, 2)
-        self.addCleanup(image_server.server_close)
-        self.addCleanup(image_server.shutdown)
-        requests = "\n".join(
-            [
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "initialize",
-                        "params": {
-                            "protocolVersion": "2025-06-18",
-                            "capabilities": {},
-                            "clientInfo": {"name": "test", "version": "1"},
-                        },
-                    }
-                ),
-                json.dumps(
-                    {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
-                ),
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 2,
-                        "method": "tools/call",
-                        "params": {
-                            "name": "generate_image",
-                            "arguments": {"prompt": "a red square"},
-                        },
-                    }
-                ),
-            ]
-        ) + "\n"
+            "accounts": {"Official": {
+                "account_type": "official",
+                "default_model": "gpt-5.6-sol",
+                "official_auth": {"tokens": {
+                    "access_token": token, "account_id": "account-1",
+                }},
+            }},
+        }))
+        output_dir = self.paths.app_home / "generated-images"
+        self.paths.image_config.write_text(json.dumps({
+            "credentialSource": "managed_account",
+            "provider": "official",
+            "accountStorePath": str(self.paths.accounts),
+            "accountName": "Official",
+            "mode": "responses",
+            "imageModel": "gpt-image-2",
+            "mainModel": "gpt-5.6-sol",
+            "outputDir": str(output_dir),
+        }))
+        original_auth = '{"auth_mode": "unchanged-test-auth"}\n'
+        self.paths.auth.write_text(original_auth)
+        image_data = ImageSseHandler.image_base64
+        reference = self.paths.app_home / "reference.png"
+        import base64
+        reference.write_bytes(base64.b64decode(image_data))
+        trace_path = self.paths.app_home / "codex-trace.json"
+        fake_codex = self.paths.app_home / "fake-codex"
+        fake_codex.write_text(f"#!{python}\n" + r'''import json, os, stat, sys
+from pathlib import Path
+home = Path(os.environ["CODEX_HOME"])
+trace = {
+    "argv": sys.argv[1:],
+    "home": str(home),
+    "auth": json.loads((home / "auth.json").read_text()),
+    "authMode": stat.S_IMODE((home / "auth.json").stat().st_mode),
+    "config": (home / "config.toml").read_text(),
+    "configMode": stat.S_IMODE((home / "config.toml").stat().st_mode),
+    "requests": [],
+}
+for line in sys.stdin:
+    message = json.loads(line)
+    trace["requests"].append(message)
+    Path(os.environ["TEST_CODEX_TRACE"]).write_text(json.dumps(trace))
+    if message["method"] == "initialize":
+        print(json.dumps({"id": message["id"], "result": {"capabilities": {}}}), flush=True)
+    elif message["method"] == "thread/start":
+        print(json.dumps({"id": message["id"], "result": {"thread": {"id": "isolated-thread"}}}), flush=True)
+    elif message["method"] == "turn/start":
+        print(json.dumps({"method": "item/completed", "params": {
+            "item": {"type": "imageGeneration", "result": os.environ["TEST_IMAGE_DATA"]}
+        }}), flush=True)
+''')
+        fake_codex.chmod(0o700)
+        deny_network = self.paths.app_home / "deny-network.mjs"
+        deny_network.write_text("globalThis.fetch = () => { throw new Error('Network is forbidden in this test'); };\n")
+        requests = "\n".join(json.dumps(message) for message in [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"},
+            }},
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                "name": "generate_image", "arguments": {
+                    "prompt": "a red square", "input_images": [{
+                        "path": str(reference), "role": "reference",
+                        "description": "use only this color palette",
+                    }],
+                },
+            }},
+        ]) + "\n"
         server = Path(__file__).resolve().parent / "imagegen_plugin" / "server.cjs"
-        endpoint = f"http://127.0.0.1:{image_server.server_address[1]}"
-
         completed = subprocess.run(
-            [node, str(server)],
-            input=requests,
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env={
+            [node, str(server)], input=requests, capture_output=True, text=True,
+            timeout=10, check=True, env={
                 **os.environ,
                 "CUSTOM_IMAGEGEN_CONFIG": str(self.paths.image_config),
-                "NODE_ENV": "test",
-                "IMAGE_OFFICIAL_BASE_URL": endpoint,
+                "CODEX_CLI_PATH": str(fake_codex),
+                "NODE_OPTIONS": f"--import={deny_network}",
+                "CODEX_HOME": str(self.paths.codex_home),
+                "TEST_CODEX_TRACE": str(trace_path),
+                "TEST_IMAGE_DATA": image_data,
             },
-            check=True,
         )
-
         responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
         result = next(item["result"] for item in responses if item.get("id") == 2)
         self.assertFalse(result.get("isError", False), result)
         detail = json.loads(next(item["text"] for item in result["content"] if item["type"] == "text"))
-        self.assertTrue(Path(detail["savedPath"]).is_file())
-        self.assertEqual(ImageSseHandler.authorization, f"Bearer {token}")
-        self.assertEqual(ImageSseHandler.account_id, "account-1")
-        self.assertEqual(ImageSseHandler.request_body["model"], "gpt-5.6-sol")
-        self.assertTrue(ImageSseHandler.request_body["stream"])
-        self.assertEqual(ImageSseHandler.request_body["tool_choice"], "required")
-        self.assertEqual(ImageSseHandler.request_body["tools"][0]["type"], "image_generation")
+        self.assertEqual(Path(detail["savedPath"]).read_bytes(), reference.read_bytes())
+        self.assertEqual(detail["mode"], "codex-native")
+        self.assertEqual(detail["model"], "gpt-5.6-sol")
+        trace = json.loads(trace_path.read_text())
+        self.assertEqual(trace["argv"], ["app-server", "--stdio"])
+        self.assertNotEqual(trace["home"], str(self.paths.codex_home))
+        self.assertFalse(Path(trace["home"]).exists(), "temporary OAuth home must be removed")
+        self.assertEqual(trace["auth"]["tokens"]["access_token"], token)
+        self.assertEqual(trace["auth"]["tokens"]["account_id"], "account-1")
+        self.assertEqual((trace["authMode"], trace["configMode"]), (0o600, 0o600))
+        config = tomllib.loads(trace["config"])
+        self.assertEqual(config["model_provider"], "openai")
+        self.assertTrue(config["features"]["image_generation"])
+        thread_start = next(item for item in trace["requests"] if item["method"] == "thread/start")
+        self.assertTrue(thread_start["params"]["ephemeral"])
+        turn_start = next(item for item in trace["requests"] if item["method"] == "turn/start")
+        self.assertEqual(turn_start["params"]["threadId"], "isolated-thread")
+        self.assertIn("a red square", turn_start["params"]["input"][0]["text"])
+        self.assertEqual(turn_start["params"]["input"][1], {"type": "localImage", "path": str(reference)})
+        self.assertEqual(self.paths.auth.read_text(), original_auth)
+        self.assertNotIn(token, completed.stdout + completed.stderr)

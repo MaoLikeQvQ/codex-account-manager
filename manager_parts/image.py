@@ -17,7 +17,12 @@ class ImageMixin:
         if not isinstance(image_state, dict):
             image_state = {}
         mcp_servers = config.get("mcp_servers", {})
-        mcp = mcp_servers.get("maolocal-imagegen", {}) if isinstance(mcp_servers, dict) else {}
+        if not isinstance(mcp_servers, dict):
+            mcp_servers = {}
+        mcp = mcp_servers.get("custom-imagegen", mcp_servers.get("maolocal-imagegen", {}))
+        if not isinstance(mcp, dict):
+            mcp = {}
+        legacy_skill = self.paths.codex_home / "skills" / "maolocal-imagegen" / "SKILL.md"
         mcp_args = mcp.get("args", []) if isinstance(mcp, dict) else []
         mcp_env = mcp.get("env", {}) if isinstance(mcp, dict) else {}
         installed_version = self._read_text(self.paths.image_plugin_version).strip()
@@ -29,6 +34,9 @@ class ImageMixin:
             and mcp_env.get("CUSTOM_IMAGEGEN_CONFIG") == str(self.paths.image_config)
         )
         enabled = bool(image_state.get("enabled", bool(mcp.get("command"))))
+        migration_pending = "maolocal-imagegen" in mcp_servers or (
+            enabled and legacy_skill.is_file()
+        )
         credential_source = str(image_config.get("credentialSource", "separate"))
         configured = (
             bool(image_config.get("accountStorePath") and image_config.get("accountName"))
@@ -43,7 +51,10 @@ class ImageMixin:
             "bundled_version": IMAGE_PLUGIN_VERSION,
             "update_available": bool(installed_version and installed_version != IMAGE_PLUGIN_VERSION),
             "pending_apply": enabled != installed
-            or (enabled and installed_version != IMAGE_PLUGIN_VERSION),
+            or (enabled and (
+                installed_version != IMAGE_PLUGIN_VERSION or not self.paths.image_skill.is_file()
+            ))
+            or migration_pending,
             "mode": str(image_config.get("mode", "images")),
             "source": str(image_state.get("source", credential_source)),
             "account_name": str(image_state.get("account_name", "")),
@@ -156,9 +167,9 @@ class ImageMixin:
         state = self._image_generation_state(config)
         config_text = self._read_text(self.paths.config)
         if not state["enabled"]:
-            updated = self._replace_toml_section(
-                config_text, "mcp_servers.maolocal-imagegen", ""
-            )
+            updated = config_text
+            for name in ("custom-imagegen", "maolocal-imagegen"):
+                updated = self._remove_image_mcp_section(updated, name)
             if updated != config_text:
                 self._backup_many(self.paths.config)
                 self._atomic_write(self.paths.config, updated)
@@ -194,30 +205,54 @@ class ImageMixin:
             for target, source in source_files.items()
         )
         block = (
-            "[mcp_servers.maolocal-imagegen]\n"
+            "[mcp_servers.custom-imagegen]\n"
             f"command = {json.dumps(node, ensure_ascii=False)}\n"
             f"args = [{json.dumps(str(self.paths.image_server), ensure_ascii=False)}]\n"
             "tool_timeout_sec = 660\n"
             "env = { CUSTOM_IMAGEGEN_CONFIG = "
             f"{json.dumps(str(self.paths.image_config), ensure_ascii=False)} }}\n"
         )
-        new_config = self._replace_toml_section(
-            config_text, "mcp_servers.maolocal-imagegen", block
-        )
+        new_config = self._remove_image_mcp_section(config_text, "maolocal-imagegen")
+        new_config = self._remove_image_mcp_section(new_config, "custom-imagegen")
+        new_config = self._replace_toml_section(new_config, "mcp_servers.custom-imagegen", block)
         writes = [(self.paths.config, new_config)]
         if not plugin_current:
             writes = [
                 (target, source.read_text(encoding="utf-8"))
                 for target, source in source_files.items()
             ] + writes
-        self._backup_many(self.paths.config)
-        self._commit_text_files(writes, "图片插件应用")
+        legacy_skill = self.paths.codex_home / "skills" / "maolocal-imagegen" / "SKILL.md"
+        self._backup_many(self.paths.config, legacy_skill)
+        self._commit_text_files(writes, "Custom ImageGen 应用")
+        # Remove only the retired skill entry after the replacement is installed.
+        # Keep any other files in the old directory, including user additions.
+        if legacy_skill.is_file():
+            legacy_skill.unlink()
+            if not any(legacy_skill.parent.iterdir()):
+                legacy_skill.parent.rmdir()
         action = "current" if plugin_current else ("updated" if previous_version else "installed")
         return {**self._image_generation_state(self._read_toml(self.paths.config)), "plugin_action": action}
 
     @staticmethod
+    def _remove_image_mcp_section(config_text: str, name: str) -> str:
+        # Include nested env tables and quoted service keys while preserving other MCPs.
+        key = re.escape(name)
+        header = re.compile(rf"^\s*\[\s*mcp_servers\.(?:{key}|\"{key}\"|'{key}')(?:\s*\]|\.)")
+        kept = []
+        removing = False
+        for line in config_text.splitlines(keepends=True):
+            if line.lstrip().startswith("["):
+                removing = bool(header.match(line))
+            if not removing:
+                kept.append(line)
+        return "".join(kept)
+
+    @staticmethod
     def _image_plugin_source_root() -> Path:
-        configured = os.environ.get("MAOLOCAL_IMAGEGEN_PLUGIN_SOURCE", "").strip()
+        configured = (
+            os.environ.get("CUSTOM_IMAGEGEN_PLUGIN_SOURCE", "").strip()
+            or os.environ.get("MAOLOCAL_IMAGEGEN_PLUGIN_SOURCE", "").strip()
+        )
         candidates = [Path(configured)] if configured else []
         candidates.append(Path(__file__).resolve().parents[2] / "custom-imagegen-plugin" / "release" / "custom-imagegen-share" / "plugins" / "custom-imagegen-plugin")
         candidates.append(ImageMixin._resource_root() / "imagegen_plugin")

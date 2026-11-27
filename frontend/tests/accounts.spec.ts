@@ -197,7 +197,7 @@ test("tools save image configuration separately from apply and omit a standalone
   await expect(page.getByText("开发模式 · 不检查应用更新")).toBeVisible();
   await expect(page.getByRole("button", { name: "检查更新" })).toBeDisabled();
   await page.getByRole("button", { name: "配置", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "图片生成配置" });
+  const dialog = page.getByRole("dialog", { name: "Custom ImageGen" });
   await dialog.getByRole("textbox", { name: "图片模型" }).fill("gpt-image-2");
   await dialog.getByRole("button", { name: "保存配置" }).click();
   await expect(dialog).not.toBeVisible();
@@ -225,7 +225,7 @@ test("image configuration uses Platform credentials when only official OAuth acc
   await page.goto("/");
   await page.getByRole("tab", { name: "工具设置" }).click();
   await page.getByRole("button", { name: "配置", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "图片生成配置" });
+  const dialog = page.getByRole("dialog", { name: "Custom ImageGen" });
   await expect(dialog.getByRole("combobox", { name: "凭据来源" })).toHaveText(
     "自定义链接",
   );

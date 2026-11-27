@@ -146,7 +146,7 @@ export default function ToolsPanel({
       });
       setImageOpen(false);
       setKey("");
-      notify(response.message || "图片配置已保存，请点击应用");
+      notify(response.message || "Custom ImageGen 配置已保存，请点击应用");
     } catch (failure) {
       setImageError(errorText(failure));
     } finally {
@@ -163,7 +163,7 @@ export default function ToolsPanel({
         ? {
             path: "/api/image-generation/apply",
             body: {},
-            label: "应用图片工具",
+            label: "应用 Custom ImageGen",
           }
         : { path: "/api/updates/download", body: {}, label: "更新应用" };
     try {
@@ -196,7 +196,7 @@ export default function ToolsPanel({
         </ToolRow>
         <ToolRow
           icon={<ImageOutlined />}
-          title="图片生成支持"
+          title="Custom ImageGen"
           description={
             image.configured
               ? `${image.account_name || image.image_model} · ${image.installed_version ? `已安装 v${image.installed_version}` : "尚未安装"}${image.pending_apply ? " · 待应用" : ""}`
@@ -294,7 +294,7 @@ export default function ToolsPanel({
         aria-labelledby="image-config-title"
       >
         <Box component="form" onSubmit={saveImage}>
-          <DialogTitle id="image-config-title">图片生成配置</DialogTitle>
+          <DialogTitle id="image-config-title">Custom ImageGen</DialogTitle>
           <DialogContent dividers>
             <Stack spacing={2} sx={{ pt: 0.5 }}>
               <FormControlLabel
@@ -305,7 +305,7 @@ export default function ToolsPanel({
                     disabled={working}
                   />
                 }
-                label="启用图片工具"
+                label="启用 Custom ImageGen"
               />
               {enabled && (
                 <>
@@ -408,7 +408,7 @@ export default function ToolsPanel({
         aria-labelledby="tool-confirm-title"
       >
         <DialogTitle id="tool-confirm-title">
-          {confirmation === "image" ? "应用图片工具" : "安装更新并重启"}
+          {confirmation === "image" ? "应用 Custom ImageGen" : "安装更新并重启"}
         </DialogTitle>
         <DialogContent>
           <DialogContentText>

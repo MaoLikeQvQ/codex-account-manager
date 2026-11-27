@@ -36484,7 +36484,9 @@ var import_promises = require("node:fs/promises");
 var import_node_os = require("node:os");
 var import_node_path = __toESM(require("node:path"), 1);
 var import_node_crypto = require("node:crypto");
+var import_node_child_process = require("node:child_process");
 var configPath = () => process.env.CUSTOM_IMAGEGEN_CONFIG || import_node_path.default.join((0, import_node_os.homedir)(), ".maolike", "custom-imagegen-plugin", "config.json");
+var defaultAccountStorePath = import_node_path.default.join((0, import_node_os.homedir)(), ".maolike", "codex", "accounts.json");
 var environmentFields = {
   IMAGE_API_BASE_URL: "baseUrl",
   IMAGE_API_KEY: "apiKey",
@@ -36495,8 +36497,8 @@ var environmentFields = {
   IMAGE_TIMEOUT_SECONDS: "timeoutSeconds"
 };
 var configSchema = external_exports.object({
-  credentialSource: external_exports.enum(["managed_account", "separate"]).default("separate"),
-  provider: external_exports.enum(["api", "official"]).default("api"),
+  provider: external_exports.string().optional(),
+  credentialSource: external_exports.enum(["separate", "managed_account"]).default("separate"),
   accountStorePath: external_exports.string().refine(import_node_path.default.isAbsolute).optional(),
   accountName: external_exports.string().trim().min(1).optional(),
   baseUrl: external_exports.string().url().optional(),
@@ -36526,47 +36528,29 @@ async function loadConfig() {
   }
   const config2 = parsed.data;
   if (config2.credentialSource === "managed_account") {
-    if (!config2.accountStorePath || !config2.accountName) throw new Error("CONFIG_INVALID：已管理账号模式缺少账号库路径或账号名。");
+    if (!config2.accountName) throw new Error("CONFIG_INVALID\uFF1Amanaged_account \u9700\u8981 accountName\u3002");
     let store;
     try {
-      store = JSON.parse(await (0, import_promises.readFile)(config2.accountStorePath, "utf8"));
+      store = JSON.parse(await (0, import_promises.readFile)(config2.accountStorePath || defaultAccountStorePath, "utf8"));
     } catch {
-      throw new Error("ACCOUNT_STORE_INVALID：账号库无法读取或不是合法 JSON。");
+      throw new Error("ACCOUNT_STORE_INVALID\uFF1A\u65E0\u6CD5\u8BFB\u53D6 .maolike \u8D26\u53F7\u5E93\u3002");
     }
     const account = store?.accounts?.[config2.accountName];
-    if (!account) throw new Error("ACCOUNT_NOT_FOUND：图片配置指定的账号已不存在，请重新保存图片配置。");
-    if (account.account_type === "official") {
+    if (account?.account_type === "official" || account?.connection_type === "official") {
       const tokens = account.official_auth?.tokens;
-      if (!tokens?.access_token || !tokens?.account_id) throw new Error("OFFICIAL_AUTH_MISSING：官方账号缺少 access_token 或 account_id，请重新登录。");
-      try {
-        const claims = JSON.parse(Buffer.from(tokens.access_token.split(".")[1], "base64url"));
-        if (claims.exp && claims.exp * 1e3 <= Date.now() + 3e4) throw new Error("expired");
-      } catch (error62) {
-        if (error62.message === "expired") throw new Error("OFFICIAL_AUTH_EXPIRED：官方账号验证已过期，请在管理器中重新激活或登录该账号。");
-      }
-      config2.provider = "official";
-      config2.baseUrl = "https://chatgpt.com/backend-api/codex";
-      if (process.env.NODE_ENV === "test" && process.env.IMAGE_OFFICIAL_BASE_URL) {
-        const testUrl = new URL(process.env.IMAGE_OFFICIAL_BASE_URL);
-        if (testUrl.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(testUrl.hostname)) {
-          throw new Error("CONFIG_INVALID：官方测试端点只能使用本机 HTTP 回环地址。");
-        }
-        config2.baseUrl = testUrl.toString().replace(/\/+$/, "");
-      }
-      config2.apiKey = tokens.access_token;
-      config2.accountId = tokens.account_id;
-      config2.mode = "responses";
-      config2.mainModel ||= account.default_model;
-    } else {
-      config2.provider = "api";
-      config2.baseUrl = account.provider_config?.base_url;
-      config2.apiKey = account.api_key;
+      if (!tokens?.access_token || !tokens?.account_id) throw new Error("OFFICIAL_AUTH_MISSING\uFF1A\u5B98\u65B9\u8D26\u53F7\u7F3A\u5C11 access_token \u6216 account_id\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u3002");
+      config2.nativeCodex = true;
+      config2.officialTokens = tokens;
+      config2.mainModel = config2.mainModel || account.default_model || "gpt-5.6-sol";
+      return config2;
     }
+    const providerConfig = account?.provider_config;
+    const managedKey = typeof account?.api_key === "string" ? account.api_key.trim() : "";
+    if (!providerConfig?.base_url || !managedKey) throw new Error("ACCOUNT_CONFIG_INVALID\uFF1A\u6240\u9009\u8D26\u53F7\u6CA1\u6709\u53EF\u7528\u4E8E\u56FE\u7247 API \u7684 Base URL \u548C Platform API Key\u3002");
+    config2.baseUrl = providerConfig.base_url;
+    config2.apiKey = managedKey;
   }
-  if (config2.provider === "official" && config2.credentialSource !== "managed_account") {
-    throw new Error("CONFIG_INVALID：官方账号验证只能从管理器的已管理账号中读取。");
-  }
-  if (!config2.baseUrl || !config2.apiKey) throw new Error("CONFIG_INVALID：图片请求账号缺少 Base URL 或有效凭据。");
+  if (!config2.baseUrl || !config2.apiKey) throw new Error("CONFIG_MISSING\uFF1A\u8BF7\u914D\u7F6E Base URL \u4E0E OpenAI Platform API Key\u3002");
   const url2 = new URL(config2.baseUrl);
   if (url2.username || url2.password || url2.search || url2.hash || url2.protocol !== "https:" && !(url2.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url2.hostname))) {
     throw new Error("CONFIG_INVALID\uFF1AbaseUrl \u9700\u4E3A HTTPS\uFF08\u672C\u673A\u5730\u5740\u53EF HTTP\uFF09\uFF0C\u4E14\u4E0D\u5F97\u542B\u7528\u6237\u540D\u3001\u5BC6\u7801\u6216\u67E5\u8BE2\u53C2\u6570\u3002");
@@ -36629,32 +36613,15 @@ async function loadInputImage(input2) {
     await file2?.close();
   }
 }
-async function generateImage(rawArgs, signal) {
+async function generateImage(rawArgs, signal, report = async () => {
+}) {
+  await report("\u6B63\u5728\u68C0\u67E5\u56FE\u7247\u53C2\u6570\u548C\u914D\u7F6E");
   const args = inputSchema.parse(rawArgs);
   const config2 = await loadConfig();
-  return generateConfiguredImage(args, config2, signal);
+  return generateConfiguredImage(args, config2, signal, report);
 }
-function imageItemFromSse(text2) {
-  let imageItem;
-  for (const frame of text2.split(/\r?\n\r?\n/)) {
-    const data = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("\n");
-    if (!data || data === "[DONE]") continue;
-    let event;
-    try {
-      event = JSON.parse(data);
-    } catch {
-      continue;
-    }
-    const candidates = [
-      event.item,
-      ...(Array.isArray(event.response?.output) ? event.response.output : []),
-      ...(Array.isArray(event.output) ? event.output : [])
-    ];
-    imageItem = candidates.find((item) => item?.type === "image_generation_call" && item?.status === "completed") || imageItem;
-  }
-  return imageItem;
-}
-async function generateConfiguredImage(args, config2, signal) {
+async function generateConfiguredImage(args, config2, signal, report = async () => {
+}) {
   signal?.throwIfAborted();
   const targets = args.input_images.filter((image) => image.role === "edit_target");
   const action = args.action || (targets.length ? "edit" : "generate");
@@ -36662,6 +36629,7 @@ async function generateConfiguredImage(args, config2, signal) {
     throw new Error("INPUT_IMAGE_REQUIRED\uFF1Aedit \u9700\u8981\u4E14\u53EA\u80FD\u6709\u4E00\u5F20 edit_target\uFF1Bgenerate \u4EC5\u63A5\u53D7 reference\u3002");
   }
   const inputs = [];
+  await report(args.input_images.length ? "\u6B63\u5728\u8BFB\u53D6\u7F16\u8F91\u76EE\u6807\u548C\u53C2\u8003\u56FE\u7247" : "\u6B63\u5728\u51C6\u5907\u751F\u6210\u8BF7\u6C42");
   for (const input2 of [...targets, ...args.input_images.filter((image) => image.role === "reference")]) {
     inputs.push(await loadInputImage(input2));
     if (inputs.reduce((sum, image) => sum + image.data.length, 0) > 40 * 1024 * 1024) {
@@ -36677,19 +36645,22 @@ Intent: ${action === "edit" ? "Edit Image 1. Preserve everything not requested t
   const options = { output_format: args.output_format };
   if (args.size) options.size = sizeMap[args.size];
   if (args.quality) options.quality = args.quality;
+  if (config2.nativeCodex) {
+    await report("\u6B63\u5728\u901A\u8FC7 Codex \u539F\u751F\u56FE\u7247\u5DE5\u5177\u751F\u6210");
+    const native = await generateWithCodexAppServer({ prompt, inputs, action, config: config2, signal, report });
+    await report("\u5DF2\u6536\u5230\u56FE\u7247\uFF0C\u6B63\u5728\u4FDD\u5B58");
+    return saveGeneratedImage(native.base64, config2, args, action, targets, inputs, native.model);
+  }
   let body = config2.mode === "images" ? { model: config2.imageModel, prompt, n: 1, ...options } : {
     model: config2.mainModel,
-    instructions: config2.provider === "official" ? "Use the image_generation tool exactly once. Return the generated image without calling shell, MCP, or other tools." : void 0,
-    input: [{ role: "user", content: [
+    input: inputs.length ? [{ role: "user", content: [
       { type: "input_text", text: prompt },
       ...inputs.map((image) => ({ type: "input_image", image_url: `data:${image.mimeType};base64,${image.data.toString("base64")}` }))
-    ] }],
-    stream: config2.provider === "official",
-    store: false,
-    parallel_tool_calls: false,
+    ] }] : prompt,
+    stream: false,
     // Reference-only creation uses auto: provider may need its edit path to consume inputs.
     tools: [{ type: "image_generation", model: config2.imageModel, action: inputs.length && action === "generate" ? "auto" : action, ...options }],
-    tool_choice: config2.provider === "official" ? "required" : { type: "image_generation" }
+    tool_choice: { type: "image_generation" }
   };
   const multipart = config2.mode === "images" && inputs.length > 0;
   if (multipart) {
@@ -36702,22 +36673,18 @@ Intent: ${action === "edit" ? "Edit Image 1. Preserve everything not requested t
   const timeout = AbortSignal.timeout(config2.timeoutSeconds * 1e3);
   const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
   let payload;
+  await report("\u6B63\u5728\u63D0\u4EA4\u8BF7\u6C42\u5E76\u7B49\u5F85\u4F9B\u5E94\u5546\u751F\u6210\u56FE\u7247");
   try {
     const response = await fetch(endpoint, {
       method: "POST",
       redirect: "error",
-      headers: {
-        ...!multipart && { "Content-Type": "application/json" },
-        Authorization: `Bearer ${config2.apiKey}`,
-        ...(config2.provider === "official" && { Accept: "text/event-stream", "ChatGPT-Account-ID": config2.accountId })
-      },
+      headers: { ...!multipart && { "Content-Type": "application/json" }, Authorization: `Bearer ${config2.apiKey}` },
       body: multipart ? body : JSON.stringify(body),
       signal: requestSignal
     });
     if (!response.ok) {
       await response.body?.cancel();
-      const prefix = config2.provider === "official" && response.status === 401 ? "OFFICIAL_AUTH_EXPIRED" : `PROVIDER_HTTP_${response.status}`;
-      throw new Error(`${prefix}\uFF1A\u8BF7\u6838\u5BF9\u8D26\u53F7\u9A8C\u8BC1\u3001\u63A5\u53E3\u3001\u6743\u9650\u3001\u53C2\u6570\u548C\u989D\u5EA6\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u91CD\u8BD5\u8BA1\u8D39\u8BF7\u6C42\u3002`);
+      throw new Error(`PROVIDER_HTTP_${response.status}\uFF1A\u8BF7\u6838\u5BF9\u4F9B\u5E94\u5546\u63A5\u53E3\u3001\u6743\u9650\u3001\u53C2\u6570\u548C\u989D\u5EA6\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u91CD\u8BD5\u8BA1\u8D39\u8BF7\u6C42\u3002`);
     }
     let length = 0;
     const chunks = [];
@@ -36726,10 +36693,9 @@ Intent: ${action === "edit" ? "Edit Image 1. Preserve everything not requested t
       if (length > 48 * 1024 * 1024) throw new Error("RESPONSE_TOO_LARGE\uFF1A\u56FE\u7247\u54CD\u5E94\u8D85\u8FC7 48 MiB\u3002");
       chunks.push(chunk);
     }
-    const responseText = Buffer.concat(chunks).toString("utf8");
-    payload = config2.provider === "official" ? { output: [imageItemFromSse(responseText)].filter(Boolean) } : JSON.parse(responseText);
+    payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch (error62) {
-    if (/^(PROVIDER_HTTP_|OFFICIAL_AUTH_|RESPONSE_TOO_LARGE)/.test(error62.message)) throw error62;
+    if (/^(PROVIDER_HTTP_|RESPONSE_TOO_LARGE)/.test(error62.message)) throw error62;
     if (signal?.aborted) throw new Error("REQUEST_CANCELLED\uFF1A\u8C03\u7528\u5DF2\u53D6\u6D88\u6216\u6279\u6B21\u5230\u671F\uFF1B\u4F9B\u5E94\u5546\u53EF\u80FD\u4ECD\u5728\u5904\u7406\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002");
     if (timeout.aborted) throw new Error(`REQUEST_TIMEOUT\uFF1A\u8BF7\u6C42\u8D85\u8FC7 ${config2.timeoutSeconds} \u79D2\uFF1B\u4F9B\u5E94\u5546\u53EF\u80FD\u4ECD\u5728\u5904\u7406\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002`);
     if (error62 instanceof SyntaxError) throw new Error("INVALID_RESPONSE\uFF1A\u4F9B\u5E94\u5546\u54CD\u5E94\u4E0D\u662F JSON\uFF1B\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002");
@@ -36742,6 +36708,7 @@ Intent: ${action === "edit" ? "Edit Image 1. Preserve everything not requested t
   }
   const bytes = Buffer.from(base643, "base64");
   const [mimeType, extension] = imageType(bytes);
+  await report("\u5DF2\u6536\u5230\u56FE\u7247\uFF0C\u6B63\u5728\u4FDD\u5B58");
   await (0, import_promises.mkdir)(config2.outputDir, { recursive: true });
   const savedPath = import_node_path.default.join(config2.outputDir, `${Date.now()}-${(0, import_node_crypto.randomUUID)()}.${extension}`);
   try {
@@ -36749,48 +36716,219 @@ Intent: ${action === "edit" ? "Edit Image 1. Preserve everything not requested t
   } catch {
     throw new Error("SAVE_FAILED\uFF1A\u56FE\u7247\u5DF2\u751F\u6210\u4F46\u4FDD\u5B58\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5 outputDir \u6743\u9650\uFF0C\u907F\u514D\u76F4\u63A5\u91CD\u590D\u8BA1\u8D39\u751F\u6210\u3002");
   }
-  return {
-    content: [
-      { type: "image", data: bytes.toString("base64"), mimeType },
-      { type: "text", text: JSON.stringify({
-        savedPath,
-        model: config2.imageModel,
-        mode: config2.mode,
-        provider: config2.provider,
-        accountName: config2.credentialSource === "managed_account" ? config2.accountName : void 0,
-        action,
-        prompt: args.prompt,
-        inputImages: inputs.map(({ path: path2, role, description }) => ({ path: path2, role, description })),
-        parentPath: targets[0]?.path
-      }) }
-    ]
+  return saveGeneratedImage(base643, config2, args, action, targets, inputs, config2.imageModel, mimeType, bytes, savedPath);
+}
+function saveGeneratedImage(base643, config2, args, action, targets, inputs, model, knownMimeType, knownBytes, knownPath) {
+  const bytes = knownBytes || Buffer.from(base643, "base64");
+  const [mimeType, extension] = knownMimeType ? [knownMimeType, knownMimeType.split("/")[1] === "jpeg" ? "jpg" : knownMimeType.split("/")[1]] : imageType(bytes);
+  const save = async () => {
+    await (0, import_promises.mkdir)(config2.outputDir, { recursive: true });
+    const savedPath = knownPath || import_node_path.default.join(config2.outputDir, `${Date.now()}-${(0, import_node_crypto.randomUUID)()}.${extension}`);
+    try {
+      if (!knownPath) await (0, import_promises.writeFile)(savedPath, bytes, { flag: "wx", mode: 384 });
+    } catch {
+      throw new Error("SAVE_FAILED\uFF1A\u56FE\u7247\u5DF2\u751F\u6210\u4F46\u4FDD\u5B58\u5931\u8D25\uFF0C\u8BF7\u68C0\u67E5 outputDir \u6743\u9650\uFF0C\u907F\u514D\u76F4\u63A5\u91CD\u590D\u8BA1\u8D39\u751F\u6210\u3002");
+    }
+    return {
+      content: [
+        { type: "image", data: bytes.toString("base64"), mimeType },
+        { type: "text", text: JSON.stringify({
+          savedPath,
+          model,
+          mode: config2.nativeCodex ? "codex-native" : config2.mode,
+          action,
+          prompt: args.prompt,
+          inputImages: inputs.map(({ path: path2, role, description }) => ({ path: path2, role, description })),
+          parentPath: targets[0]?.path
+        }) }
+      ]
+    };
   };
+  return save();
+}
+async function generateWithCodexAppServer({ prompt, inputs, action, config: config2, signal, report }) {
+  let codexPath = process.env.CODEX_CLI_PATH || "codex";
+  if (!process.env.CODEX_CLI_PATH && process.platform === "darwin") {
+    for (const candidate of [
+      "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+      "/Applications/ChatGPT.app/Contents/Resources/codex"
+    ]) {
+      try {
+        await (0, import_promises.access)(candidate);
+        codexPath = candidate;
+        break;
+      } catch {
+      }
+    }
+  }
+  const home = await (0, import_promises.mkdtemp)(import_node_path.default.join(process.env.TMPDIR || "/tmp", "custom-imagegen-codex-"));
+  let child;
+  let deadline;
+  let onAbort;
+  let timedOut = false;
+  let stopped = false;
+  try {
+    signal?.throwIfAborted();
+    const auth = { auth_mode: "chatgpt", tokens: config2.officialTokens };
+    await (0, import_promises.writeFile)(import_node_path.default.join(home, "auth.json"), JSON.stringify(auth), { mode: 384 });
+    await (0, import_promises.writeFile)(import_node_path.default.join(home, "config.toml"), `model = ${JSON.stringify(config2.mainModel)}
+model_provider = "openai"
+cli_auth_credentials_store = "file"
+sandbox_mode = "read-only"
+[features]
+image_generation = true
+`, { mode: 384 });
+    signal?.throwIfAborted();
+    child = (0, import_node_child_process.spawn)(codexPath, ["app-server", "--stdio"], { env: { ...process.env, CODEX_HOME: home }, stdio: ["pipe", "pipe", "ignore"] });
+    const interrupted = new Promise((_, reject) => {
+      child.once("error", () => reject(new Error("OFFICIAL_RUNTIME_UNAVAILABLE\uFF1A\u65E0\u6CD5\u542F\u52A8 Codex CLI\uFF0C\u8BF7\u68C0\u67E5\u5B89\u88C5\u6216 CODEX_CLI_PATH\u3002")));
+      onAbort = () => {
+        stopped = true;
+        child.kill("SIGTERM");
+        reject(new Error("REQUEST_CANCELLED\uFF1A\u8C03\u7528\u5DF2\u53D6\u6D88\u6216\u6279\u6B21\u5230\u671F\uFF1B\u4F9B\u5E94\u5546\u53EF\u80FD\u4ECD\u5728\u5904\u7406\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002"));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+      deadline = setTimeout(() => {
+        timedOut = true;
+        stopped = true;
+        child.kill("SIGTERM");
+        reject(new Error(`REQUEST_TIMEOUT\uFF1A\u8BF7\u6C42\u8D85\u8FC7 ${config2.timeoutSeconds} \u79D2\uFF1B\u4F9B\u5E94\u5546\u53EF\u80FD\u4ECD\u5728\u5904\u7406\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002`));
+      }, config2.timeoutSeconds * 1e3);
+    });
+    child.stdin.on("error", () => {
+    });
+    const send = (method, params, id) => {
+      if (stopped) return;
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...id !== void 0 && { id }, method, ...params !== void 0 && { params } })}
+`);
+    };
+    const consume = async () => {
+      let buffer = "";
+      let initialized = false;
+      send("initialize", { clientInfo: { name: "custom-imagegen", version: "0.2.1" } }, 1);
+      for await (const chunk of child.stdout) {
+        if (stopped) break;
+        signal?.throwIfAborted();
+        buffer += chunk.toString();
+        let newline;
+        while ((newline = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line.startsWith("{")) continue;
+          let message;
+          try {
+            message = JSON.parse(line);
+          } catch {
+            continue;
+          }
+          if (message.id === 1) {
+            if (message.error) throw new Error("OFFICIAL_INIT_FAILED\uFF1ACodex CLI \u521D\u59CB\u5316\u5931\u8D25\u3002");
+            if (message.result && !initialized) {
+              initialized = true;
+              send("initialized");
+              send("thread/start", { model: config2.mainModel, modelProvider: "openai", ephemeral: true, cwd: process.cwd() }, 2);
+            }
+          }
+          if (message.method === "item/started" && message.params?.item?.type === "imageGeneration") {
+            await report("Codex \u539F\u751F\u56FE\u7247\u5DE5\u5177\u6B63\u5728\u751F\u6210\u56FE\u7247");
+          }
+          if (message.id === 2) {
+            if (message.error) throw new Error("OFFICIAL_THREAD_FAILED\uFF1ACodex \u539F\u751F\u56FE\u7247\u4F1A\u8BDD\u521B\u5EFA\u5931\u8D25\u3002");
+            if (message.result?.thread?.id) {
+              const input2 = [{ type: "text", text: `${prompt}
+
+Action: ${action}. Use the native image generation tool and return exactly one generated image.` }];
+              for (const item of inputs) input2.push({ type: "localImage", path: item.path });
+              send("turn/start", { threadId: message.result.thread.id, input: input2 }, 3);
+            }
+          }
+          const candidates = [];
+          const visit2 = (value) => {
+            if (!value || typeof value !== "object") return;
+            if ((value.type === "imageGeneration" || value.type === "image_generation_call") && (typeof value.result === "string" || typeof value.savedPath === "string")) candidates.push(value);
+            for (const childValue of Object.values(value)) visit2(childValue);
+          };
+          visit2(message);
+          if (candidates.length) {
+            const candidate = candidates[0];
+            let image;
+            if (candidate.savedPath) {
+              try {
+                image = (await (0, import_promises.readFile)(candidate.savedPath)).toString("base64");
+              } catch {
+                throw new Error("OFFICIAL_IMAGE_FILE_MISSING\uFF1ACodex \u5DF2\u8FD4\u56DE\u56FE\u7247\u8BB0\u5F55\uFF0C\u4F46\u56FE\u7247\u6587\u4EF6\u4E0D\u53EF\u8BFB\u53D6\u3002");
+              }
+            } else {
+              image = candidate.result;
+              if (image.startsWith("data:") && image.includes(";base64,")) image = image.slice(image.indexOf(";base64,") + 8);
+              else if (image.startsWith("/") && await (0, import_promises.readFile)(image).then(() => true).catch(() => false)) image = (await (0, import_promises.readFile)(image)).toString("base64");
+              else {
+                try {
+                  const parsed = JSON.parse(image);
+                  image = parsed.b64_json || parsed.base64 || parsed.data || parsed.result || image;
+                } catch {
+                }
+                if (image.includes(",") && image.split(",").at(-1).length > 100) image = image.split(",").at(-1);
+              }
+            }
+            return { base64: image, model: config2.mainModel };
+          }
+          if (message.id === 3 && message.error) throw new Error("OFFICIAL_IMAGE_FAILED\uFF1ACodex \u539F\u751F\u56FE\u7247\u8BF7\u6C42\u5931\u8D25\u3002");
+          if (message.method === "turn/completed") throw new Error("OFFICIAL_IMAGE_EMPTY\uFF1ACodex \u672A\u8FD4\u56DE image_generation \u7ED3\u679C\u3002");
+        }
+      }
+      throw new Error("OFFICIAL_IMAGE_EMPTY\uFF1ACodex \u672A\u8FD4\u56DE image_generation \u7ED3\u679C\u3002");
+    };
+    return await Promise.race([consume(), interrupted]);
+  } catch (error62) {
+    if (signal?.aborted) throw new Error("REQUEST_CANCELLED\uFF1A\u8C03\u7528\u5DF2\u53D6\u6D88\u6216\u6279\u6B21\u5230\u671F\uFF1B\u4F9B\u5E94\u5546\u53EF\u80FD\u4ECD\u5728\u5904\u7406\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002");
+    if (timedOut) throw new Error(`REQUEST_TIMEOUT\uFF1A\u8BF7\u6C42\u8D85\u8FC7 ${config2.timeoutSeconds} \u79D2\uFF1B\u4F9B\u5E94\u5546\u53EF\u80FD\u4ECD\u5728\u5904\u7406\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002`);
+    if (/^OFFICIAL_/.test(error62.message)) throw error62;
+    throw new Error("OFFICIAL_IMAGE_FAILED\uFF1ACodex \u539F\u751F\u56FE\u7247\u8BF7\u6C42\u5931\u8D25\uFF1B\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002");
+  } finally {
+    stopped = true;
+    clearTimeout(deadline);
+    signal?.removeEventListener("abort", onAbort);
+    child?.kill("SIGTERM");
+    await (0, import_promises.rm)(home, { recursive: true, force: true });
+  }
 }
 var batchInputSchema = external_exports.object({
   images: external_exports.array(inputSchema).min(1).max(8),
   concurrency: external_exports.number().int().min(1).max(4).default(3)
 }).strict();
-async function generateImages(rawArgs, signal) {
+async function generateImages(rawArgs, signal, report = async () => {
+}) {
+  await report("\u6B63\u5728\u68C0\u67E5\u6279\u91CF\u56FE\u7247\u53C2\u6570\u548C\u914D\u7F6E");
   const args = batchInputSchema.parse(rawArgs);
   const config2 = await loadConfig();
   const deadline = AbortSignal.timeout(6e5);
   const batchSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
   const results = new Array(args.images.length);
+  let completed = 0;
+  let succeeded = 0;
+  const reportItem = (index, message) => report(`\u5DF2\u5904\u7406 ${completed}/${args.images.length} \u5F20\uFF0C\u6210\u529F ${succeeded} \u5F20 \xB7 \u7B2C ${index + 1} \u5F20\uFF1A${message}`);
   let next = 0;
   async function worker() {
     while (next < args.images.length) {
       const index = next++;
       if (batchSignal.aborted) {
         results[index] = { index: index + 1, status: "not_started", error: "BATCH_CANCELLED\uFF1A\u6279\u6B21\u5DF2\u53D6\u6D88\u6216\u8D85\u8FC7 600 \u79D2\uFF0C\u672A\u63D0\u4EA4\u6B64\u56FE\u7247\u3002" };
+        completed++;
+        await reportItem(index, "\u5DF2\u53D6\u6D88\uFF0C\u672A\u63D0\u4EA4");
         continue;
       }
       try {
-        const generated = await generateConfiguredImage(args.images[index], config2, batchSignal);
+        const generated = await generateConfiguredImage(args.images[index], config2, batchSignal, (message) => reportItem(index, message));
         const detail = JSON.parse(generated.content.find((item) => item.type === "text").text);
         results[index] = { index: index + 1, status: "succeeded", ...detail };
+        succeeded++;
       } catch (error62) {
         results[index] = { index: index + 1, status: "failed", error: error62.message };
       }
+      completed++;
+      await reportItem(index, results[index].status === "succeeded" ? "\u5DF2\u4FDD\u5B58" : "\u5931\u8D25\uFF0C\u672A\u81EA\u52A8\u91CD\u8BD5");
     }
   }
   await Promise.all(Array.from({ length: Math.min(args.concurrency, args.images.length) }, worker));
@@ -36801,40 +36939,95 @@ async function generateImages(rawArgs, signal) {
   }) }] };
 }
 
+// src/progress.mjs
+async function withProgress(extra, operation, { intervalMs = 1e4 } = {}) {
+  const token = extra._meta?.progressToken;
+  if (token === void 0) return operation(async () => {
+  });
+  const started = Date.now();
+  let sequence = 0;
+  let closed = false;
+  let currentMessage = "\u6B63\u5728\u51C6\u5907\u56FE\u7247\u8BF7\u6C42";
+  let pending = Promise.resolve();
+  const report = async (message) => {
+    if (closed || extra.signal?.aborted) return;
+    currentMessage = message;
+    const elapsed = Math.floor((Date.now() - started) / 1e3);
+    const notification = {
+      method: "notifications/progress",
+      params: {
+        progressToken: token,
+        progress: sequence++,
+        message: `Custom ImageGen \xB7 ${message} \xB7 \u5DF2\u7528\u65F6 ${elapsed} \u79D2`
+      }
+    };
+    pending = pending.then(() => {
+      if (!extra.signal?.aborted) return extra.sendNotification(notification);
+    }).catch(() => {
+    });
+    await pending;
+  };
+  await report(currentMessage);
+  const heartbeat = setInterval(() => {
+    void report(currentMessage);
+  }, intervalMs);
+  heartbeat.unref?.();
+  const stop = () => {
+    clearInterval(heartbeat);
+  };
+  extra.signal?.addEventListener("abort", stop, { once: true });
+  try {
+    const result = await operation(report);
+    await report("\u5904\u7406\u5B8C\u6210\uFF0C\u8BF7\u68C0\u67E5\u8FD4\u56DE\u7684\u56FE\u7247\u548C\u6BCF\u9879\u7ED3\u679C");
+    return result;
+  } catch (error62) {
+    await report("\u5904\u7406\u5931\u8D25\uFF0C\u8BE6\u60C5\u89C1\u5DE5\u5177\u7ED3\u679C\uFF1B\u672A\u81EA\u52A8\u91CD\u8BD5");
+    throw error62;
+  } finally {
+    closed = true;
+    stop();
+    extra.signal?.removeEventListener("abort", stop);
+    await pending;
+  }
+}
+
 // src/server.mjs
-var server = new McpServer({ name: "custom-imagegen", version: "0.2.0" }, {
-  instructions: "Use the current conversation to select input images. For follow-up edits pass the intended successful savedPath as input_images edit_target. Never infer a target from a global latest file. Inspect input and output images, preserve requested invariants, save new versions, and do not retry paid requests automatically. Prefer one generate_image call per asset; dependent edits must wait for the preceding result."
+var server = new McpServer({ name: "custom-imagegen", title: "Custom ImageGen", version: "0.2.1" }, {
+  instructions: "Use the current conversation to select input images. For follow-up edits pass the intended successful savedPath as input_images edit_target. Never infer a target from a global latest file. Inspect input and output images, preserve requested invariants, save new versions, and do not retry paid requests automatically. Independent assets may use concurrent generate_image calls or generate_images (default concurrency 3, maximum 4 per batch); dependent edits must wait for the preceding result. Request MCP progress notifications to receive stage updates, elapsed time and batch completion counts. Progress is not a provider rendering percentage."
 });
 server.registerTool("imagegen_status", {
+  title: "Custom ImageGen \xB7 \u914D\u7F6E\u72B6\u6001",
   description: "\u68C0\u67E5\u63D2\u4EF6\u914D\u7F6E\u662F\u5426\u6709\u6548\uFF0C\u4E0D\u53D1\u8D77\u7F51\u7EDC\u8BF7\u6C42\u3001\u4E0D\u8FD4\u56DE\u5BC6\u94A5\uFF1B\u4E0D\u4EE3\u8868\u4F9B\u5E94\u5546\u8BA4\u8BC1\u5DF2\u9A8C\u8BC1\u3002",
   inputSchema: {},
   annotations: { readOnlyHint: true }
 }, async () => {
   try {
     const config2 = await loadConfig();
-    return { content: [{ type: "text", text: JSON.stringify({ configured: true, mode: config2.mode, imageModel: config2.imageModel, provider: config2.provider, accountName: config2.credentialSource === "managed_account" ? config2.accountName : void 0, providerChecked: false }) }] };
+    return { content: [{ type: "text", text: JSON.stringify({ configured: true, mode: config2.mode, imageModel: config2.imageModel, providerChecked: false }) }] };
   } catch (error62) {
     return { isError: true, content: [{ type: "text", text: error62.message }] };
   }
 });
 server.registerTool("generate_image", {
-  description: "\u751F\u6210\u3001\u53C2\u8003\u56FE\u521B\u4F5C\u6216\u7F16\u8F91\u4E00\u5F20\u56FE\u7247\uFF08\u53EF\u80FD\u8BA1\u8D39\uFF09\u3002\u4ECE\u5F53\u524D\u5BF9\u8BDD\u9009\u62E9\u771F\u5B9E\u56FE\u7247\u8DEF\u5F84\uFF1A\u4FEE\u6539\u4E0A\u4E00\u7248\u65F6\u5C06\u8BE5\u7248 savedPath \u4F5C\u4E3A input_images \u7684 edit_target\uFF0C\u5176\u4ED6\u56FE\u6807\u4E3A reference\u3002prompt \u5199\u6E05\u4FEE\u6539\u53CA\u4FDD\u7559\u9879\u3002\u7ED3\u679C\u53E6\u5B58\u5E76\u8FD4\u56DE\u56FE\u7247\u3001savedPath \u548C parentPath\uFF0C\u4F9B\u4E0B\u4E00\u8F6E\u7F16\u8F91\u3002",
+  title: "Custom ImageGen",
+  description: "\u751F\u6210\u3001\u53C2\u8003\u56FE\u521B\u4F5C\u6216\u7F16\u8F91\u4E00\u5F20\u56FE\u7247\uFF08\u53EF\u80FD\u8BA1\u8D39\uFF09\u3002\u72EC\u7ACB\u56FE\u7247\u5141\u8BB8\u5E76\u53D1\u8C03\u7528\uFF1B\u4F9D\u8D56\u4E0A\u4E00\u5F20\u7ED3\u679C\u7684\u7F16\u8F91\u5FC5\u987B\u7B49\u5F85\u3002\u652F\u6301 MCP \u8FDB\u5EA6\u901A\u77E5\uFF0C\u8FD4\u56DE\u751F\u6210\u9636\u6BB5\u548C\u5DF2\u7528\u65F6\u3002\u4ECE\u5F53\u524D\u5BF9\u8BDD\u9009\u62E9\u771F\u5B9E\u56FE\u7247\u8DEF\u5F84\uFF1A\u4FEE\u6539\u4E0A\u4E00\u7248\u65F6\u5C06\u8BE5\u7248 savedPath \u4F5C\u4E3A input_images \u7684 edit_target\uFF0C\u5176\u4ED6\u56FE\u6807\u4E3A reference\u3002prompt \u5199\u6E05\u4FEE\u6539\u53CA\u4FDD\u7559\u9879\u3002\u7ED3\u679C\u53E6\u5B58\u5E76\u8FD4\u56DE\u56FE\u7247\u3001savedPath \u548C parentPath\uFF0C\u4F9B\u4E0B\u4E00\u8F6E\u7F16\u8F91\u3002",
   inputSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
 }, async (args, extra) => {
   try {
-    return await generateImage(args, extra.signal);
+    return await withProgress(extra, (report) => generateImage(args, extra.signal, report));
   } catch (error62) {
     return { isError: true, content: [{ type: "text", text: error62.message }] };
   }
 });
 server.registerTool("generate_images", {
-  description: "\u5E76\u53D1\u751F\u6210\u4E00\u6279\u72EC\u7ACB\u56FE\u7247\uFF08\u53EF\u80FD\u8BA1\u8D39\uFF09\u3002\u6BCF\u6279 1\u20138 \u5F20\uFF0C\u9ED8\u8BA4\u5E76\u53D1 3\u3001\u6700\u591A 4\uFF1B\u6309\u8F93\u5165\u987A\u5E8F\u8FD4\u56DE\u6BCF\u5F20\u72B6\u6001\u548C savedPath\u3002\u90E8\u5206\u5931\u8D25\u4FDD\u7559\u6210\u529F\u7ED3\u679C\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002\u6279\u6B21\u6700\u957F 600 \u79D2\uFF1B\u5E76\u53D1\u9650\u5236\u4EC5\u9488\u5BF9\u672C\u6B21\u8C03\u7528\u3002",
+  title: "Custom ImageGen \xB7 \u6279\u91CF\u751F\u6210",
+  description: "\u5E76\u53D1\u751F\u6210\u4E00\u6279\u72EC\u7ACB\u56FE\u7247\uFF08\u53EF\u80FD\u8BA1\u8D39\uFF09\u3002\u6BCF\u6279 1\u20138 \u5F20\uFF0C\u9ED8\u8BA4\u5E76\u53D1 3\u3001\u6700\u591A 4\uFF1B\u901A\u8FC7 MCP \u8FDB\u5EA6\u901A\u77E5\u62A5\u544A\u6BCF\u5F20\u9636\u6BB5\u3001\u5B8C\u6210\u6570\u91CF\u548C\u5DF2\u7528\u65F6\uFF0C\u6309\u8F93\u5165\u987A\u5E8F\u8FD4\u56DE\u6BCF\u5F20\u72B6\u6001\u548C savedPath\u3002\u90E8\u5206\u5931\u8D25\u4FDD\u7559\u6210\u529F\u7ED3\u679C\uFF0C\u4E0D\u81EA\u52A8\u91CD\u8BD5\u3002\u6279\u6B21\u6700\u957F 600 \u79D2\uFF1B\u5E76\u53D1\u9650\u5236\u4EC5\u9488\u5BF9\u672C\u6B21\u8C03\u7528\u3002",
   inputSchema: batchInputSchema,
   annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
 }, async (args, extra) => {
   try {
-    return await generateImages(args, extra.signal);
+    return await withProgress(extra, (report) => generateImages(args, extra.signal, report));
   } catch (error62) {
     return { isError: true, content: [{ type: "text", text: error62.message }] };
   }

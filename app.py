@@ -304,19 +304,19 @@ class Handler(BaseHTTPRequestHandler):
                 elif path == "/api/image-generation/configure":
                     result = MANAGER.configure_image_generation(body)
                     response = {
-                        "message": "图片配置已保存，请点击应用使其生效",
+                        "message": "Custom ImageGen 配置已保存，请点击应用使其生效",
                         "result": result,
                     }
                 elif path == "/api/image-generation/apply":
                     result = MANAGER.apply_image_generation()
                     messages = {
-                        "installed": "图片插件已安装并应用配置，重启 Codex 后生效",
-                        "updated": "图片插件已更新并应用配置，重启 Codex 后生效",
-                        "current": "图片插件已是最新版本，配置已应用",
-                        "disabled": "图片工具已停用",
+                        "installed": "Custom ImageGen 已安装并应用配置，重启 Codex 后生效",
+                        "updated": "Custom ImageGen 已更新并应用配置，重启 Codex 后生效",
+                        "current": "Custom ImageGen 已是最新版本，配置已应用",
+                        "disabled": "Custom ImageGen 已停用",
                     }
                     response = {
-                        "message": messages.get(result.get("plugin_action"), "图片工具已应用"),
+                        "message": messages.get(result.get("plugin_action"), "Custom ImageGen 已应用"),
                         "result": result,
                     }
                 elif path == "/api/codex/launch":

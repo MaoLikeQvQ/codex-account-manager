@@ -9,7 +9,7 @@ description: 通过自定义供应商生成图片、使用参考图、编辑现�
 
 ## 配置
 
-管理器默认将配置写入 `~/.maolike/codex/custom-imagegen.json`。可以固定选择账号列表中的已管理账号，也可以使用单独的自定义链接。自定义链接最小配置为：
+独立插件默认配置为 `~/.maolike/custom-imagegen-plugin/config.json`，Windows 在用户目录同一路径。通过 MaoX 管理器安装时使用 `~/.maolike/codex/custom-imagegen.json`，由 `CUSTOM_IMAGEGEN_CONFIG` 指定。自定义链接只需：
 
 ```json
 {
@@ -18,7 +18,7 @@ description: 通过自定义供应商生成图片、使用参考图、编辑现�
 }
 ```
 
-已管理账号配置只记录 `accountStorePath` 和 `accountName`；每次调用从权限为 `0600` 的账号库读取指定账号。OpenAI 官方账号使用已保存的 ChatGPT OAuth access token 与 account ID 请求 Codex Responses SSE；自定义账号读取其 Base URL/API Key。OAuth 不作为 Platform API Key 使用，官方账号 401 或凭据到期时提示用户在管理器中重新激活或登录，不自动重试生成。`CUSTOM_IMAGEGEN_CONFIG` 可以指定配置文件；`IMAGE_*` 环境变量仅用于单独自定义链接。默认 Images API、gpt-image-2、600 秒超时，兼容 mode、imageModel、mainModel、outputDir、timeoutSeconds。不要读取或展示密钥，也不要要求用户将 Key 发到聊天。
+每次调用重新读取配置。也可配置 `credentialSource: "managed_account"`、`accountStorePath` 和 `accountName` 选择 `.maolike` 账号。官方账号会通过隔离 `CODEX_HOME` 委托本机 `codex app-server` 使用 ChatGPT OAuth 完成原生 `image_generation`；不会把 OAuth 当作 Platform API Key，也不会直接请求内部 `backend-api` 地址。自定义账号仍读取 Base URL/API Key。`CUSTOM_IMAGEGEN_CONFIG` 可以指定其他文件；`IMAGE_*` 环境变量优先。默认 Images API、gpt-image-2、600 秒超时，兼容已有 mode、imageModel、mainModel、outputDir、timeoutSeconds 配置。不要读取或展示密钥，也不要要求用户将 Key 发到聊天。
 
 在工具目录找到本插件的 `imagegen_status` 和 `generate_image`。首次使用检查配置；状态检查不代表供应商连通。工具缺失时说明需要安装更新并新建任务；不要自行切换其他供应商、内置工具或 CLI。
 
@@ -33,7 +33,7 @@ description: 通过自定义供应商生成图片、使用参考图、编辑现�
 
 ## 调用
 
-使用 `generate_image`，一张结果一次调用。prompt 必填；可省略 action，存在 edit_target 时自动编辑，否则生成。编辑恰好需要一张目标图；参考图可多张，输入总数最多 16。
+单张使用 `generate_image`；多张相互独立的图片允许并发调用，或使用 `generate_images` 批量生成（每批 1–8 张，默认并发 3、最多 4）。prompt 必填；可省略 action，存在 edit_target 时自动编辑，否则生成。编辑恰好需要一张目标图；参考图可多张，输入总数最多 16。
 
 ```json
 {
@@ -64,7 +64,8 @@ description: 通过自定义供应商生成图片、使用参考图、编辑现�
 - 返回 savedPath、parentPath 和 inputImages；parentPath 指向本轮编辑目标。所有结果另存，原图不覆盖。后续引用正确版本的 savedPath；回到原图时直接重用原路径，无需重新生成原图。
 - 展示图片并报告实际保存路径。预览图默认位于 `$CODEX_HOME/generated_images/custom-imagegen/`（未设置时为 `~/.codex/generated_images/custom-imagegen/`）；已有 outputDir 配置仍优先。
 - 项目使用的最终素材应复制到工作区或用户指定位置，避免项目只依赖默认输出目录。不要覆盖已有资产，除非用户要求替换。
-- 多张图默认分别调用 generate_image，依赖上一轮结果的编辑必须等待该结果。旧 generate_images 仅作为独立图片批量兼容入口；整批 600 秒上限，检查每项状态，勿把部分成功说成全部成功。
+- 多张独立图片可并发调用 generate_image，或使用 generate_images；依赖上一轮结果的编辑必须等待该结果，不能提前编造 savedPath。批量整批 600 秒上限，检查每项状态，勿把部分成功说成全部成功。
+- 调用时请求 MCP 进度通知（`_meta.progressToken`，由宿主提供）。插件报告准备、提交、等待、保存、结束等阶段，等待时每 10 秒更新已用时；批量还报告已处理/总数和每张状态。无供应商真实进度时，不把阶段或耗时说成渲染百分比。宿主未请求进度时仍正常生成；界面如何呈现由宿主决定。
 - 超时、取消、网络错误可能发生在计费后，不自动重试或整批重跑。已成功文件保留；明确失败原因后按用户意图处理。
 
-此插件对齐已公开的工作流，不声称复刻原生 image_gen 的内部实现。供应商必须支持实际使用的生成、图片输入和编辑协议。
+官方账号使用本机 Codex app-server 委托；自定义供应商必须支持实际使用的生成、图片输入和编辑协议。
